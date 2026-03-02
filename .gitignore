@@ -2,3 +2,8 @@
 .env
 
 app/config.py
+
+*__pycache__
+*.pyc
+
+backend.zip
