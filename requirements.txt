@@ -1,0 +1,17 @@
+fastapi
+uvicorn[standard]
+asyncpg
+python-jose[cryptography]
+python-dotenv
+pydantic
+pydantic-settings
+python-multipart
+httpx
+passlib[bcrypt]
+
+# Dev / Test
+pytest
+pytest-asyncio
+pytest-anyio
+rich
+

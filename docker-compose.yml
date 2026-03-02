@@ -1,0 +1,17 @@
+version: "3.9"
+
+# Dev docker-compose – hot reload, all logs visible, single worker
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    volumes:
+      - .:/app          # live mount so uvicorn --reload picks up changes
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload --log-level debug
+    restart: unless-stopped
+
