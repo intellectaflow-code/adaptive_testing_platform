@@ -1,6 +1,8 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
 from typing import List, Optional
 import asyncpg
+from pydantic import BaseModel
+from app.services.grok_client import generate_ai_quiz
 
 from app.database import get_db
 from app.dependencies import get_current_user, require_teacher_up
@@ -41,6 +43,7 @@ async def _enrich_question(db, q: dict) -> dict:
     q["options"] = await _fetch_options(db, str(q["id"]))
     q["tags"] = await _fetch_tags(db, str(q["id"]))
     return q
+
 
 
 @router.post("", response_model=QuestionOut, status_code=201)
