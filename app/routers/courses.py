@@ -1,17 +1,21 @@
 from fastapi import APIRouter, Depends, HTTPException, status, Request
 from typing import List, Optional
 import asyncpg
-
+from fastapi import UploadFile, File, Form
+from google.cloud import storage
 from app.database import get_db
 from app.dependencies import get_current_user, require_teacher_up, require_admin_or_hod, require_admin
 from app.schemas.courses import (
     CourseCreate, CourseUpdate, CourseOut,
     AssignTeacherIn, EnrollStudentIn,
 )
+from app.config import get_settings
 from app.services.activity import log_activity
 
-router = APIRouter(prefix="/courses", tags=["Courses"])
 
+router = APIRouter(prefix="/courses", tags=["Courses"])
+settings = get_settings()
+storage_client = storage.Client(project=settings.google_project_id)
 
 # ---- Helpers ----
 
@@ -39,26 +43,47 @@ async def _assert_course_access(db, course_id: str, user: dict):
     raise HTTPException(status_code=403, detail="Access denied")
 
 
-# ---- Course CRUD ----
+
 @router.post("", response_model=CourseOut, status_code=201)
 async def create_course(
-    body: CourseCreate,
+    name: str = Form(...),
+    code: Optional[str] = Form(None),      # Changed to Optional
+    semester: Optional[str] = Form(None),  # Receive as string first to avoid 422
+    branch: Optional[str] = Form(None),    # Changed to Optional
+    file: UploadFile = File(...),          # Mandatory
     current_user: dict = Depends(require_teacher_up),
     db: asyncpg.Connection = Depends(get_db),
 ):
-    # Use a transaction to ensure both steps happen or none do
+    
+    try:
+        semester_int = int(semester)
+    except (ValueError, TypeError):
+        semester_int = 1 # Fallback default
+
+    # 1. Upload Syllabus to Google Cloud Storage
+    try:
+        bucket = storage_client.bucket(settings.google_bucket_name)
+        # Unique path per course/teacher
+        blob_path = f"syllabi/{current_user['id']}/{file.filename}"
+        blob = bucket.blob(blob_path)
+        
+        blob.upload_from_file(file.file, content_type="application/pdf")
+        gcs_url = f"gs://{settings.google_bucket_name}/{blob_path}"
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Syllabus upload failed: {str(e)}")
+
+    # 2. Database Transaction
     async with db.transaction():
-        # 1. Create the course
+        # Insert Course including the syllabus URL
         row = await db.fetchrow(
             """
-            INSERT INTO public.courses (name, code, semester, branch, created_by)
-            VALUES ($1, $2, $3, $4, $5) RETURNING *
+            INSERT INTO public.courses (name, code, semester, branch, created_by, syllabus_file_url)
+            VALUES ($1, $2, $3, $4, $5, $6) RETURNING *
             """,
-            body.name, body.code, body.semester, body.branch, str(current_user["id"]),
+            name, code, semester_int, branch, str(current_user["id"]), gcs_url,
         )
         
-        # 2. Add the teacher to the assignment table so it shows up in their list
-        # This is the missing piece that satisfies your JOIN in list_courses
+        # Link teacher to the course
         await db.execute(
             """
             INSERT INTO public.course_teachers (course_id, teacher_id)
@@ -70,7 +95,8 @@ async def create_course(
         await log_activity(db, str(current_user["id"]), "create_course", {"course_id": str(row["id"])})
         
         return dict(row)
-    
+
+
     
 @router.get("", response_model=List[CourseOut])
 async def list_courses(

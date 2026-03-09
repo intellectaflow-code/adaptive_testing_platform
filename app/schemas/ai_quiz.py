@@ -47,3 +47,12 @@ from typing import List
 class AIQuizSubmit(BaseModel):
     attempt_id: UUID
     answers: List[AIQuizAnswerCreate]
+
+class QuizConfig(BaseModel):
+    module: str
+    q_type: str = "mcq"
+    count: int = 5
+    options_count: Optional[int] = 4
+    min_words: Optional[int] = 50
+    teacher_notes: Optional[str] = ""
+    filename: Optional[str] = ""

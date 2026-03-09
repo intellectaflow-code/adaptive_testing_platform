@@ -11,7 +11,7 @@ from app.config import get_settings
 from app.database import create_pool, close_pool
 from app.routers import (
     profiles, courses, questions, quizzes,
-    attempts, analytics, announcements, messages, admin, auth,teachers_dashboard,
+    attempts, analytics, announcements, messages, admin, auth,teachers_dashboard, syllabus_to_quiz
 )
 
 # ── Logging ───────────────────────────────────────────────────────────────────
@@ -60,12 +60,11 @@ app = FastAPI(
 # ── CORS – open in dev ────────────────────────────────────────────────────────
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],   # tighten this in production
+    allow_origins=["http://localhost:3000"], # Your React URL
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
 
 # ── Dev error handler – return full traceback in JSON ─────────────────────────
 @app.exception_handler(Exception)
@@ -109,7 +108,8 @@ app.include_router(announcements.router, prefix=PREFIX)
 app.include_router(messages.router,      prefix=PREFIX)
 app.include_router(admin.router,         prefix=PREFIX)
 app.include_router(teachers_dashboard.router,         prefix=PREFIX)
-# teachers_dashboard
+app.include_router(syllabus_to_quiz.router,         prefix=PREFIX)
+# 
 
 
 # ── Health / root ─────────────────────────────────────────────────────────────
