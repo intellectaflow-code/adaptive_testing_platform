@@ -11,7 +11,7 @@ from app.config import get_settings
 from app.database import create_pool, close_pool
 from app.routers import (
     profiles, courses, questions, quizzes,
-    attempts, analytics, announcements, messages, admin, auth
+    attempts, analytics, announcements, messages, admin, auth,teachers_dashboard,
 )
 
 # ── Logging ───────────────────────────────────────────────────────────────────
@@ -108,6 +108,8 @@ app.include_router(analytics.router,     prefix=PREFIX)
 app.include_router(announcements.router, prefix=PREFIX)
 app.include_router(messages.router,      prefix=PREFIX)
 app.include_router(admin.router,         prefix=PREFIX)
+app.include_router(teachers_dashboard.router,         prefix=PREFIX)
+# teachers_dashboard
 
 
 # ── Health / root ─────────────────────────────────────────────────────────────

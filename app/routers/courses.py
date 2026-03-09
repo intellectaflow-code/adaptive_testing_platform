@@ -40,24 +40,38 @@ async def _assert_course_access(db, course_id: str, user: dict):
 
 
 # ---- Course CRUD ----
-
 @router.post("", response_model=CourseOut, status_code=201)
 async def create_course(
     body: CourseCreate,
     current_user: dict = Depends(require_teacher_up),
     db: asyncpg.Connection = Depends(get_db),
 ):
-    row = await db.fetchrow(
-        """
-        INSERT INTO public.courses (name, code, semester, branch, created_by)
-        VALUES ($1, $2, $3, $4, $5) RETURNING *
-        """,
-        body.name, body.code, body.semester, body.branch, str(current_user["id"]),
-    )
-    await log_activity(db, str(current_user["id"]), "create_course", {"course_id": str(row["id"])})
-    return dict(row)
+    # Use a transaction to ensure both steps happen or none do
+    async with db.transaction():
+        # 1. Create the course
+        row = await db.fetchrow(
+            """
+            INSERT INTO public.courses (name, code, semester, branch, created_by)
+            VALUES ($1, $2, $3, $4, $5) RETURNING *
+            """,
+            body.name, body.code, body.semester, body.branch, str(current_user["id"]),
+        )
+        
+        # 2. Add the teacher to the assignment table so it shows up in their list
+        # This is the missing piece that satisfies your JOIN in list_courses
+        await db.execute(
+            """
+            INSERT INTO public.course_teachers (course_id, teacher_id)
+            VALUES ($1, $2)
+            """,
+            row["id"], str(current_user["id"])
+        )
 
-
+        await log_activity(db, str(current_user["id"]), "create_course", {"course_id": str(row["id"])})
+        
+        return dict(row)
+    
+    
 @router.get("", response_model=List[CourseOut])
 async def list_courses(
     branch: Optional[str] = None,
@@ -82,6 +96,7 @@ async def list_courses(
         return [dict(r) for r in rows]
 
     # Teachers see their assigned courses
+    # Teachers see their assigned courses
     if current_user["role"] == "teacher":
         rows = await db.fetch(
             """
@@ -91,7 +106,9 @@ async def list_courses(
             ORDER BY c.name
             LIMIT $2 OFFSET $3
             """,
-            str(current_user["id"]), limit, skip,
+            str(current_user["id"]),  # $1
+            limit,                    # $2
+            skip                      # $3
         )
         return [dict(r) for r in rows]
 
