@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from typing import List, Optional
 import asyncpg
 from pydantic import BaseModel
-from app.services.grok_client import generate_ai_quiz
+from app.services.groq_client import generate_ai_quiz
 
 from app.database import get_db
 from app.dependencies import get_current_user, require_teacher_up

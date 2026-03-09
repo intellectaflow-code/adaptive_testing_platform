@@ -71,6 +71,7 @@ class QuizOut(BaseModel):
     created_at: datetime
     updated_at: datetime
     question_count: Optional[int] = None
+    test_id: Optional[str] = None
 
 
 class QuizPermissionCreate(BaseModel):

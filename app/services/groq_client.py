@@ -1,5 +1,6 @@
 import os
 import json
+import re
 from openai import OpenAI
 from dotenv import load_dotenv
 
@@ -47,9 +48,24 @@ Format:
         temperature=0.6,
     )
 
-    content = response.choices[0].message.content
+    content = response.choices[0].message.content.strip()
 
+    # Extract JSON if model adds extra text
     try:
-        return json.loads(content)
+        json_match = re.search(r"\[.*\]", content, re.DOTALL)
+        if json_match:
+            content = json_match.group(0)
+
+        data = json.loads(content)
+
     except Exception:
         raise ValueError("AI returned invalid JSON")
+
+    # Validate response
+    if not isinstance(data, list):
+        raise ValueError("AI response format invalid")
+
+    if len(data) != num_questions:
+        raise ValueError("AI returned wrong number of questions")
+
+    return data
