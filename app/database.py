@@ -2,7 +2,9 @@ import asyncpg
 import logging
 from typing import Optional
 from app.config import get_settings
+from dotenv import load_dotenv
 
+load_dotenv()
 logger = logging.getLogger("quiz.db")
 
 _pool: Optional[asyncpg.Pool] = None
