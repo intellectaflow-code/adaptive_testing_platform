@@ -3,6 +3,7 @@ import os
 from uuid import UUID
 from fastapi import APIRouter, HTTPException, UploadFile, File, Depends
 from google.cloud import storage
+from supabase_auth import datetime
 import vertexai
 from vertexai.generative_models import GenerativeModel, Part
 import asyncpg
@@ -140,38 +141,79 @@ async def create_quiz_from_ai(
 ):
     questions = payload.get("questions", [])
     details = payload.get("details", {})
+
+    def parse_dt(dt_str):
+        if not dt_str:
+            return None
+        try:
+            # Replace 'Z' with nothing or handle ISO format from frontend
+            return datetime.fromisoformat(dt_str.replace("Z", ""))
+        except ValueError:
+            return None
+
+    start_time = parse_dt(details.get('start_time'))
+    end_time = parse_dt(details.get('end_time'))
     
+    # Ensure mandatory numeric fields have defaults to prevent 500 errors
+    passing_marks = float(details.get('passing_marks', 0))
+    duration = int(details.get('duration_minutes', 30))
+    max_attempts = int(details.get('max_attempts', 1))
+
     async with db.transaction():
-        # 1. Insert into quizzes table
+        # 1. Insert into quizzes table with ALL fields
         quiz_id = await db.fetchval(
             """INSERT INTO public.quizzes 
                (course_id, created_by, title, description, total_marks, passing_marks, 
-                duration_minutes, randomize_questions, randomize_options, is_published, test_id)
-               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, false, $10) RETURNING id""",
-            course_id, current_user['id'], details['title'], details['description'],
-            len(questions), float(details['passing_marks']), int(details['duration']),
-            True, True, f"AI-{os.urandom(3).hex().upper()}"
+                duration_minutes, start_time, end_time, randomize_questions, 
+                randomize_options, allow_multiple_attempts, max_attempts, 
+                show_results_immediately, is_published, test_id)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, false, $15) 
+               RETURNING id""",
+            course_id, 
+            current_user['id'], 
+            details.get('title', 'AI Quiz'), 
+            details.get('description', ''),
+            len(questions), 
+            passing_marks, 
+            duration,
+            start_time, # Now a datetime object, not a string
+            end_time,   # Will be None if not provided
+            details.get('randomize_questions', True),
+            details.get('randomize_options', True),
+            details.get('allow_multiple_attempts', False),
+            max_attempts,
+            details.get('show_results_immediately', False),
+            f"AI-{os.urandom(3).hex().upper()}"
         )
 
         # 2. Insert Questions and Options
-        for q in questions:
+        for idx, q in enumerate(questions):
+            # We use idx + 1 for the question_order
             q_id = await db.fetchval(
                 """INSERT INTO public.question_bank 
-                   (course_id, created_by, question_text, question_type, topic, is_ai_generated, explanation, marks)
-                   VALUES ($1, $2, $3, 'mcq_single', $4, true, $5, 1.0) RETURNING id""",
-                course_id, current_user['id'], q['question'], details['title'], q.get('explanation', '')
+                   (course_id, created_by, question_text, question_type, topic, 
+                    is_ai_generated, explanation, marks)
+                   VALUES ($1, $2, $3, 'mcq_single', $4, true, $5, 1.0) 
+                   RETURNING id""",
+                course_id, 
+                current_user['id'], 
+                q['question'], 
+                details.get('title'), 
+                q.get('explanation', '')
             )
             
             for opt_text in q['options']:
                 await db.execute(
-                    "INSERT INTO public.question_options (question_id, option_text, is_correct) VALUES ($1, $2, $3)",
+                    """INSERT INTO public.question_options (question_id, option_text, is_correct) 
+                     VALUES ($1, $2, $3)""",
                     q_id, opt_text, opt_text == q['answer']
                 )
                 
-            # 3. Link question to quiz (Assuming a quiz_questions junction table exists)
+            # 3. Link question to quiz with correct order
             await db.execute(
-                "INSERT INTO public.quiz_questions (quiz_id, question_id) VALUES ($1, $2)",
-                quiz_id, q_id
+                """INSERT INTO public.quiz_questions (quiz_id, question_id, question_order) 
+                 VALUES ($1, $2, $3)""",
+                quiz_id, q_id, idx + 1
             )
 
     return {"status": "success", "quiz_id": str(quiz_id)}

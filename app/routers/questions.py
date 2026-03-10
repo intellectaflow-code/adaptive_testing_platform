@@ -96,9 +96,9 @@ async def list_questions(
     current_user: dict = Depends(require_teacher_up),
     db: asyncpg.Connection = Depends(get_db),
 ):
-    where_parts = ["q.is_deleted = false", "q.is_active = true"]
-    params: list = []
-    idx = 1
+    where_parts = ["q.is_deleted = false", "q.is_active = true", "q.created_by = $1"]
+    params: list = [str(current_user["id"])]
+    idx = 2
 
     if course_id:
         where_parts.append(f"q.course_id = ${idx}"); params.append(course_id); idx += 1
@@ -129,6 +129,7 @@ async def list_questions(
     for row in rows:
         result.append(await _enrich_question(db, row))
     return result
+
 
 
 @router.get("/{question_id}", response_model=QuestionOut)

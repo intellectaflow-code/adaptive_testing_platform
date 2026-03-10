@@ -25,7 +25,6 @@ async def create_announcement(
     )
     return dict(row)
 
-
 @router.get("", response_model=List[AnnouncementOut])
 async def list_announcements(
     course_id: Optional[str] = Query(None),
@@ -35,35 +34,50 @@ async def list_announcements(
     current_user: dict = Depends(get_current_user),
     db: asyncpg.Connection = Depends(get_db),
 ):
-    where_parts = ["1=1"]
-    params: list = []
-    idx = 1
-
+    where_parts = []
+    params = []
+    
+    # 1. Role-Based Visibility Filtering
     if current_user["role"] == "student":
-        # Only see announcements for their courses
-        if course_id:
-            where_parts.append(f"course_id = ${idx}"); params.append(course_id); idx += 1
-        else:
-            where_parts.append(
-                f"""(course_id IN (
-                    SELECT course_id FROM public.enrollments WHERE student_id = ${idx}
-                ) OR course_id IS NULL)"""
-            )
-            params.append(str(current_user["id"])); idx += 1
+        # Students see: Announcements for their enrolled courses OR Global (NULL)
+        where_parts.append(
+            f"""(course_id IN (
+                SELECT course_id FROM public.enrollments WHERE student_id = ${len(params) + 1}
+            ) OR course_id IS NULL)"""
+        )
+        params.append(str(current_user["id"]))
     else:
-        if course_id:
-            where_parts.append(f"course_id = ${idx}"); params.append(course_id); idx += 1
+        # Teachers/HODs see: ONLY what they created
+        where_parts.append(f"created_by = ${len(params) + 1}")
+        params.append(str(current_user["id"]))
 
+    # 2. Specific Course Filtering (if requested)
+    if course_id:
+        where_parts.append(f"course_id = ${len(params) + 1}")
+        params.append(course_id)
+
+    # 3. Active Status Filtering
     if active_only:
         where_parts.append("is_active = true")
 
-    where = " AND ".join(where_parts)
-    rows = await db.fetch(
-        f"SELECT * FROM public.announcements WHERE {where} ORDER BY created_at DESC LIMIT ${idx} OFFSET ${idx+1}",
-        *params, limit, skip,
-    )
-    return [dict(r) for r in rows]
+    # Construct Query
+    where_clause = " WHERE " + " AND ".join(where_parts) if where_parts else ""
+    
+    # Add Pagination Params
+    params.append(limit)
+    limit_idx = len(params)
+    params.append(skip)
+    skip_idx = len(params)
 
+    query = f"""
+        SELECT * FROM public.announcements 
+        {where_clause} 
+        ORDER BY created_at DESC 
+        LIMIT ${limit_idx} OFFSET ${skip_idx}
+    """
+    
+    rows = await db.fetch(query, *params)
+    return [dict(r) for r in rows]
 
 @router.get("/{announcement_id}", response_model=AnnouncementOut)
 async def get_announcement(
