@@ -23,6 +23,13 @@ async def update_my_profile(
     db: asyncpg.Connection = Depends(get_db),
 ):
     updates = body.model_dump(exclude_none=True)
+
+    if current_user.get("role") == "teacher":
+        updates.pop("usn", None)
+    # 3. For students: Convert empty strings to None to prevent UniqueViolation
+    elif "usn" in updates and updates["usn"].strip() == "":
+        updates["usn"] = None
+
     if not updates:
         raise HTTPException(status_code=400, detail="No fields to update")
 
@@ -30,22 +37,28 @@ async def update_my_profile(
         f"{k} = ${i + 2}" for i, k in enumerate(updates.keys())
     )
     values = list(updates.values())
+    try:
+        row = await db.fetchrow(
+            f"""
+            UPDATE public.profiles
+            SET {set_clause}, updated_at = now()
+            WHERE id = $1 AND is_deleted = false
+            RETURNING *
+            """,
+            current_user["id"], *values,
+        )
+        if not row:
+            raise HTTPException(status_code=404, detail="Profile not found")
 
-    row = await db.fetchrow(
-        f"""
-        UPDATE public.profiles
-        SET {set_clause}, updated_at = now()
-        WHERE id = $1 AND is_deleted = false
-        RETURNING *
-        """,
-        current_user["id"], *values,
-    )
-    if not row:
-        raise HTTPException(status_code=404, detail="Profile not found")
-
-    await log_activity(db, str(current_user["id"]), "update_profile",
-                       request.client.host if request.client else None)
-    return dict(row)
+        await log_activity(db, str(current_user["id"]), "update_profile",
+                            request.client.host if request.client else None)
+        return dict(row)
+    
+    except asyncpg.exceptions.UniqueViolationError:
+        raise HTTPException(
+            status_code=400, 
+            detail="The USN provided is already registered to another user."
+        )
 
 
 # ---- Admin endpoints ----
