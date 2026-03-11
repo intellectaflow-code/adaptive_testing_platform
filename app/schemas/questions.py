@@ -15,6 +15,7 @@ class OptionOut(BaseModel):
     option_text: str
     media_url: Optional[str] = None
     is_correct: bool
+    
 
 
 class OptionOutStudent(BaseModel):
@@ -67,4 +68,5 @@ class QuestionOut(BaseModel):
     created_at: datetime
     options: List[OptionOut] = []
     tags: List[str] = []
+    is_locked: bool = False
 

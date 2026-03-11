@@ -91,3 +91,68 @@ class QuizPermissionOut(BaseModel):
     granted_by: Optional[UUID] = None
     granted_at: datetime
 
+
+class QuizTemplateBase(BaseModel):
+    title: str
+    total_versions: int = Field(default=6, ge=1)
+    questions_per_quiz: int = Field(default=20, ge=1)
+
+class QuizTemplateCreate(QuizTemplateBase):
+    pass
+
+class QuizTemplate(QuizTemplateBase):
+    id: UUID
+    teacher_id: UUID
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+class TemplatePoolItem(BaseModel):
+    question_id: UUID
+    is_anchor: bool = False
+
+class AddQuestionsToPool(BaseModel):
+    template_id: UUID
+    questions: List[TemplatePoolItem]
+
+class TemplatePoolResponse(BaseModel):
+    template_id: UUID
+    question_id: UUID
+    is_anchor: bool
+    # We include details for the UI
+    question_text: Optional[str] = None
+
+class GenerateVariantsRequest(BaseModel):
+    template_id: UUID
+    student_ids: List[UUID] # The 60 students to be distributed
+
+class QuizAssignmentOut(BaseModel):
+    id: UUID
+    student_id: UUID
+    quiz_id: UUID
+    assigned_at: datetime
+    # Nested quiz info so the student knows what to take
+    quiz_title: str
+
+class QuizTemplateCreate(BaseModel):
+    title: str
+    total_versions: int = 6
+    questions_per_quiz: int = 20
+
+class QuizTemplateOut(QuizTemplateCreate):
+    id: UUID
+    teacher_id: UUID
+    created_at: datetime
+
+# Question Pool Management
+class PoolItem(BaseModel):
+    question_id: UUID
+    is_anchor: bool = False
+
+class AddToPoolRequest(BaseModel):
+    questions: List[PoolItem]
+
+# Generation Request
+class GenerateRequest(BaseModel):
+    student_ids: List[UUID]

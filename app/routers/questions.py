@@ -38,11 +38,25 @@ async def _fetch_tags(db, question_id: str):
     return [r["tag"] for r in rows]
 
 
-async def _enrich_question(db, q: dict) -> dict:
-    q = dict(q)
-    q["options"] = await _fetch_options(db, str(q["id"]))
-    q["tags"] = await _fetch_tags(db, str(q["id"]))
-    return q
+async def _enrich_question(db, question: dict) -> dict:
+    question_dict = dict(question)
+    q_id = question_dict['id']
+
+    # New Logic: Check if linked to any published quiz
+    is_published = await db.fetchval("""
+        SELECT EXISTS (
+            SELECT 1 
+            FROM public.quiz_questions qq
+            JOIN public.quizzes q ON qq.quiz_id = q.id
+            WHERE qq.question_id = $1 AND q.is_published = true
+        )
+    """, q_id)
+
+    # Attach the flag so the Frontend can see it
+    question_dict['is_locked'] = is_published
+    question_dict["options"] = await _fetch_options(db, str(question_dict["id"]))
+    question_dict["tags"] = await _fetch_tags(db, str(question_dict["id"]))
+    return question_dict
 
 
 
@@ -141,7 +155,6 @@ async def get_question(
     q = await _get_question_or_404(db, question_id)
     return await _enrich_question(db, q)
 
-
 @router.put("/{question_id}", response_model=QuestionOut)
 async def update_question(
     question_id: str,
@@ -149,7 +162,12 @@ async def update_question(
     current_user: dict = Depends(require_teacher_up),
     db: asyncpg.Connection = Depends(get_db),
 ):
-    await _get_question_or_404(db, question_id)
+    # FIX: Assign the result to q
+    q = await _get_question_or_404(db, question_id)
+    
+    # Check if locked
+    if q.get('is_published'):
+        raise HTTPException(status_code=403, detail="Cannot edit a published question.")
 
     updates = body.model_dump(exclude_none=True, exclude={"options", "tags"})
 
@@ -164,6 +182,7 @@ async def update_question(
             question_id, *updates.values(),
         )
 
+    # Handle Options
     if body.options is not None:
         async with db.transaction():
             await db.execute(
@@ -175,6 +194,7 @@ async def update_question(
                     question_id, opt.option_text, opt.media_url, opt.is_correct,
                 )
 
+    # Handle Tags
     if body.tags is not None:
         async with db.transaction():
             await db.execute(
@@ -186,8 +206,9 @@ async def update_question(
                     question_id, tag.lower().strip(),
                 )
 
-    q = await _get_question_or_404(db, question_id)
-    return await _enrich_question(db, q)
+    # Final fetch to return updated data
+    final_q = await _get_question_or_404(db, question_id)
+    return await _enrich_question(db, final_q)
 
 
 @router.delete("/{question_id}", status_code=204)
