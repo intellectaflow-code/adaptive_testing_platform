@@ -222,3 +222,152 @@ async def approve_ai_question(
         raise HTTPException(status_code=404, detail="AI question not found")
     return dict(row)
 
+@router.get("/course/{course_id}/student-performance")
+async def teacher_student_performance(
+    course_id: str,
+    _: dict = Depends(require_teacher_up),
+    db: asyncpg.Connection = Depends(get_db),
+):
+
+    rows = await db.fetch(
+        """
+        SELECT
+            p.id as student_id,
+            p.full_name,
+            p.usn,
+
+            COUNT(a.id) as attempts,
+            ROUND(AVG(a.total_score)::numeric,2) as average_score,
+            MAX(a.total_score) as highest_score,
+
+            MAX(a.total_score) - MIN(a.total_score) as improvement
+
+        FROM public.quiz_attempts a
+        JOIN public.quizzes q ON q.id = a.quiz_id
+        JOIN public.profiles p ON p.id = a.student_id
+
+        WHERE q.course_id = $1
+        AND a.status IN ('submitted','evaluated')
+
+        GROUP BY p.id, p.full_name, p.usn
+        ORDER BY average_score DESC
+        """,
+        course_id,
+    )
+
+    return [dict(r) for r in rows]
+
+@router.get("/student/{student_id}/score-trend")
+async def score_trend(
+    student_id: str,
+    current_user: dict = Depends(get_current_user),
+    db: asyncpg.Connection = Depends(get_db),
+):
+
+    if current_user["role"] == "student" and str(current_user["id"]) != student_id:
+        raise HTTPException(status_code=403, detail="Cannot view another student's data")
+
+    rows = await db.fetch(
+        """
+        SELECT
+            q.title as quiz,
+            a.total_score,
+            a.submitted_at
+        FROM public.quiz_attempts a
+        JOIN public.quizzes q ON q.id = a.quiz_id
+        WHERE a.student_id = $1
+        AND a.status IN ('submitted','evaluated')
+        ORDER BY a.submitted_at
+        """,
+        student_id,
+    )
+
+    return [dict(r) for r in rows]
+
+@router.get("/course/{course_id}/weak-students")
+async def weak_students(
+    course_id: str,
+    _: dict = Depends(require_teacher_up),
+    db: asyncpg.Connection = Depends(get_db),
+):
+
+    rows = await db.fetch(
+        """
+        SELECT
+            p.full_name,
+            p.usn,
+            AVG(a.total_score) as avg_score
+
+        FROM public.quiz_attempts a
+        JOIN public.quizzes q ON q.id = a.quiz_id
+        JOIN public.profiles p ON p.id = a.student_id
+
+        WHERE q.course_id = $1
+        AND a.status IN ('submitted','evaluated')
+
+        GROUP BY p.full_name, p.usn
+        HAVING AVG(a.total_score) < 40
+        ORDER BY avg_score ASC
+        """,
+        course_id,
+    )
+
+    return [dict(r) for r in rows]
+
+@router.get("/course/{course_id}/top-performers")
+async def top_performers(
+    course_id: str,
+    limit: int = Query(5, ge=1, le=50),
+    _: dict = Depends(require_teacher_up),
+    db: asyncpg.Connection = Depends(get_db),
+):
+
+    rows = await db.fetch(
+        """
+        SELECT
+            p.full_name,
+            p.usn,
+            AVG(a.total_score) as avg_score,
+            MAX(a.total_score) as highest_score
+
+        FROM public.quiz_attempts a
+        JOIN public.quizzes q ON q.id = a.quiz_id
+        JOIN public.profiles p ON p.id = a.student_id
+
+        WHERE q.course_id = $1
+        AND a.status IN ('submitted','evaluated')
+
+        GROUP BY p.full_name, p.usn
+        ORDER BY avg_score DESC
+        LIMIT $2
+        """,
+        course_id,
+        limit,
+    )
+
+    return [dict(r) for r in rows]
+
+@router.get("/course/{course_id}/class-summary")
+async def class_summary(
+    course_id: str,
+    _: dict = Depends(require_teacher_up),
+    db: asyncpg.Connection = Depends(get_db),
+):
+
+    row = await db.fetchrow(
+        """
+        SELECT
+            COUNT(DISTINCT a.student_id) as total_students,
+            COUNT(*) as total_attempts,
+            AVG(a.total_score) as class_average,
+            MAX(a.total_score) as highest_score,
+            MIN(a.total_score) as lowest_score
+        FROM public.quiz_attempts a
+        JOIN public.quizzes q ON q.id = a.quiz_id
+        WHERE q.course_id = $1
+        AND a.status IN ('submitted','evaluated')
+        """,
+        course_id,
+    )
+
+    return dict(row)
