@@ -1,3 +1,4 @@
+import json
 from fastapi import APIRouter, Depends, HTTPException, Query
 from typing import List, Optional
 from datetime import datetime, timezone
@@ -12,12 +13,6 @@ from app.schemas.quizzes import (
     QuizQuestionAdd, QuizPermissionCreate, QuizPermissionOut,
 )
 from app.services.activity import log_activity
-from app.schemas.ai_quiz import (
-    AIQuizAttemptCreate,
-    AIQuizAttemptOut,
-    AIQuizSubmit,
-    AIQuizAnswerCreate
-)
 router = APIRouter(prefix="/quizzes", tags=["Quizzes"])
 
 
@@ -47,164 +42,6 @@ async def _enrich_quiz(db, row: dict) -> dict:
     q["question_count"] = count
     return q
 
-@router.post("/ai/start")
-async def start_ai_quiz(
-    body: AIQuizAttemptCreate,
-    current_user: dict = Depends(get_current_user),
-    db: asyncpg.Connection = Depends(get_db),
-):
-
-    if current_user["role"] != "student":
-        raise HTTPException(status_code=403, detail="Only students can start AI quizzes")
-
-    async with db.transaction():
-
-        row = await db.fetchrow(
-            """
-            INSERT INTO public.ai_quiz_attempts
-            (student_id, topic, difficulty, total_questions)
-            VALUES ($1,$2,$3,$4)
-            RETURNING *
-            """,
-            str(current_user["id"]),
-            body.topic,
-            body.difficulty,
-            body.total_questions,
-        )
-
-        attempt_id = row["id"]
-
-        questions = await generate_ai_quiz(
-            topic=body.topic,
-            difficulty=body.difficulty,
-            num_questions=body.total_questions,
-        )
-
-        # store generated questions
-        for q in questions:
-            await db.execute(
-                """
-                INSERT INTO public.ai_quiz_answers
-                (attempt_id, question_text, correct_answer)
-                VALUES ($1,$2,$3)
-                """,
-                attempt_id,
-                q["question_text"],
-                q["correct_answer"],
-            )
-
-    # remove correct answers before sending to frontend
-    safe_questions = []
-    for q in questions:
-        safe_questions.append({
-            "question_text": q["question_text"],
-            "options": q["options"]
-        })
-
-    return {
-        "attempt_id": attempt_id,
-        "questions": safe_questions
-    }
-
-
-@router.post("/ai/submit")
-async def submit_ai_quiz(
-    body: AIQuizSubmit,
-    current_user: dict = Depends(get_current_user),
-    db: asyncpg.Connection = Depends(get_db),
-):
-
-    attempt = await db.fetchrow(
-        """
-        SELECT * FROM public.ai_quiz_attempts
-        WHERE id = $1 AND student_id = $2
-        """,
-        body.attempt_id,
-        str(current_user["id"]),
-    )
-
-    if not attempt:
-        raise HTTPException(status_code=404, detail="Attempt not found")
-
-    correct_count = 0
-
-    async with db.transaction():
-
-        for ans in body.answers:
-
-            if ans.is_correct:
-                correct_count += 1
-
-            await db.execute(
-                """
-                INSERT INTO public.ai_quiz_answers
-                (attempt_id, question_text, selected_answer, correct_answer, is_correct)
-                VALUES ($1,$2,$3,$4,$5)
-                """,
-                body.attempt_id,
-                ans.question_text,
-                ans.selected_answer,
-                ans.correct_answer,
-                ans.is_correct,
-            )
-
-        total_questions = len(body.answers)
-        score = correct_count
-
-        await db.execute(
-            """
-            UPDATE public.ai_quiz_attempts
-            SET correct_answers = $1,
-                score = $2
-            WHERE id = $3
-            """,
-            correct_count,
-            score,
-            body.attempt_id,
-        )
-
-    return {
-        "attempt_id": body.attempt_id,
-        "correct_answers": correct_count,
-        "total_questions": total_questions,
-        "score": score
-    }
-
-@router.get("/ai/history")
-async def get_ai_quiz_history(
-    current_user: dict = Depends(get_current_user),
-    db: asyncpg.Connection = Depends(get_db),
-):
-
-    rows = await db.fetch(
-        """
-        SELECT *
-        FROM public.ai_quiz_attempts
-        WHERE student_id = $1
-        ORDER BY created_at DESC
-        """,
-        str(current_user["id"]),
-    )
-
-    return [dict(r) for r in rows]
-
-@router.get("/ai/{attempt_id}/answers")
-async def get_ai_quiz_answers(
-    attempt_id: str,
-    current_user: dict = Depends(get_current_user),
-    db: asyncpg.Connection = Depends(get_db),
-):
-
-    rows = await db.fetch(
-        """
-        SELECT *
-        FROM public.ai_quiz_answers
-        WHERE attempt_id = $1
-        """,
-        attempt_id,
-    )
-
-    return [dict(r) for r in rows]
 
 @router.post("", response_model=QuizOut, status_code=201)
 async def create_quiz(

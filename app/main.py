@@ -13,6 +13,8 @@ from app.routers import (
     profiles, courses, questions, quizzes,
     attempts, analytics, announcements, messages, admin, auth,teachers_dashboard, syllabus_to_quiz
 )
+from app.routers import ai_quiz
+
 
 # ── Logging ───────────────────────────────────────────────────────────────────
 logging.basicConfig(
@@ -110,6 +112,8 @@ app.include_router(admin.router,         prefix=PREFIX)
 app.include_router(teachers_dashboard.router,         prefix=PREFIX)
 app.include_router(syllabus_to_quiz.router,         prefix=PREFIX)
 # 
+app.include_router(ai_quiz.router, prefix=PREFIX)
+# teachers_dashboard
 
 
 # ── Health / root ─────────────────────────────────────────────────────────────
