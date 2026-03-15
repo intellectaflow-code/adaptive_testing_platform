@@ -18,6 +18,7 @@ class ProfileUpdate(BaseModel):
     branch: Optional[str] = None
     section: Optional[str] = None
     usn: Optional[str] = None
+    sem: Optional[int] = None
 
 
 class ProfileAdminUpdate(ProfileUpdate):
@@ -28,10 +29,12 @@ class ProfileAdminUpdate(ProfileUpdate):
 class ProfileOut(BaseModel):
     id: UUID
     full_name: str
+    email: Optional[str] = None
     role: str
     branch: Optional[str] = None
     section: Optional[str] = None
     usn: Optional[str] = None
+    sem: Optional[int] = None
     is_active: bool
     created_at: datetime
     updated_at: datetime

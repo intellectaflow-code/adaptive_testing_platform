@@ -23,7 +23,7 @@ async def register(
         res = supabase.auth.admin.create_user({
             "email": body.email,
             "password": body.password,
-            "email_confirm": True,  # auto-confirm for now
+            "email_confirm": True,
         })
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Supabase error: {str(e)}")
@@ -32,18 +32,25 @@ async def register(
     if not user:
         raise HTTPException(status_code=400, detail="Failed to create user")
 
-    # 2. Create profile in your DB
+    # 2. Create profile in DB
     try:
-        await db.execute(
-            """
-            INSERT INTO public.profiles (id, email, full_name, role, branch, created_at, updated_at)
-            VALUES ($1, $2, $3, $4, $5, now(), now())
-            ON CONFLICT (id) DO NOTHING
-            """,
-            user.id, body.email, body.full_name, body.role, body.branch,
-        )
+            await db.execute(
+                """
+                INSERT INTO public.profiles
+                (id, email, full_name, role, branch, usn, sem, section, created_at, updated_at)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, now(), now())
+                ON CONFLICT (id) DO NOTHING
+                """,
+                user.id,
+                body.email,
+                body.full_name,
+                body.role,
+                body.branch,
+                body.usn,
+                body.semester,   # still coming from API as semester
+                body.section,
+            )
     except Exception as e:
-        # Rollback: delete the Supabase user if profile creation fails
         supabase.auth.admin.delete_user(user.id)
         raise HTTPException(status_code=500, detail=f"Profile creation failed: {str(e)}")
 
@@ -53,8 +60,12 @@ async def register(
         "password": body.password,
     })
 
-    await log_activity(db, str(user.id), "register",
-                       request.client.host if request.client else None)
+    await log_activity(
+        db,
+        str(user.id),
+        "register",
+        request.client.host if request.client else None
+    )
 
     return AuthResponse(
         access_token=sign_in.session.access_token,
@@ -62,7 +73,6 @@ async def register(
         user_id=str(user.id),
         email=user.email,
     )
-
 
 @router.post("/login", response_model=AuthResponse)
 async def login(

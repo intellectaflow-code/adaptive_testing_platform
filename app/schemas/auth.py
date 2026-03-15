@@ -9,13 +9,16 @@ class RegisterRequest(BaseModel):
     full_name: Optional[str] = None
     role: Optional[str] = "student"
     branch: Optional[str] = None
+    usn: Optional[str] = None
+    semester: Optional[int] = None
+    section: Optional[str] = None
 
     @field_validator("email")
     @classmethod
     def validate_mite_domain(cls, v: str) -> str:
         if not v.endswith("@mite.ac.in"):
             raise HTTPException(
-                status_code=400, 
+                status_code=400,
                 detail="Only @mite.ac.in email addresses are allowed."
             )
         return v.lower()

@@ -6,6 +6,9 @@ import asyncpg
 import httpx
 from app.config import get_settings
 from app.database import get_db
+import json
+from jose import jwk
+from jose.utils import base64url_decode
 
 security = HTTPBearer()
 _jwks_cache = None
@@ -23,21 +26,36 @@ async def get_supabase_jwks():
 
 
 def decode_token(token: str, jwks: dict) -> dict:
-    settings = get_settings()
     try:
-        payload = jwt.decode(
-            token=token,
-            key=jwks,
-            # settings = settings.supabase_jwt_secret,
-            algorithms=["HS256", "RS256", "ES256"],
-            options={"verify_aud": False,"verify_signature": True},
-        )
+        headers = jwt.get_unverified_header(token)
+        kid = headers.get("kid")
+
+        key = None
+        for jwk_key in jwks["keys"]:
+            if jwk_key["kid"] == kid:
+                key = jwk_key
+                break
+
+        if key is None:
+            raise HTTPException(status_code=401, detail="No matching JWKS key found")
+
+        # 🔴 Convert JWK to public key
+        public_key = jwk.construct(key)
+
+        message, encoded_signature = token.rsplit(".", 1)
+        decoded_signature = base64url_decode(encoded_signature.encode())
+
+        if not public_key.verify(message.encode(), decoded_signature):
+            raise HTTPException(status_code=401, detail="Signature verification failed")
+
+        payload = jwt.get_unverified_claims(token)
+
         return payload
+
     except JWTError as e:
         raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=f"Invalid token: {e}  |  Tip: Get a fresh JWT from Supabase Auth",
-            headers={"WWW-Authenticate": "Bearer"},
+            status_code=401,
+            detail=f"Invalid token: {str(e)}",
         )
 
 

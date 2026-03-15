@@ -41,9 +41,9 @@ async def list_announcements(
     if current_user["role"] == "student":
         # Students see: Announcements for their enrolled courses OR Global (NULL)
         where_parts.append(
-            f"""(course_id IN (
+            f"""(a.course_id IN (
                 SELECT course_id FROM public.enrollments WHERE student_id = ${len(params) + 1}
-            ) OR course_id IS NULL)"""
+            ) OR a.course_id IS NULL)"""
         )
         params.append(str(current_user["id"]))
     else:
@@ -53,12 +53,12 @@ async def list_announcements(
 
     # 2. Specific Course Filtering (if requested)
     if course_id:
-        where_parts.append(f"course_id = ${len(params) + 1}")
+        where_parts.append(f"a.course_id = ${len(params) + 1}")
         params.append(course_id)
 
     # 3. Active Status Filtering
     if active_only:
-        where_parts.append("is_active = true")
+        where_parts.append("a.is_active = true")
 
     # Construct Query
     where_clause = " WHERE " + " AND ".join(where_parts) if where_parts else ""
@@ -70,10 +70,16 @@ async def list_announcements(
     skip_idx = len(params)
 
     query = f"""
-        SELECT * FROM public.announcements 
-        {where_clause} 
-        ORDER BY created_at DESC 
-        LIMIT ${limit_idx} OFFSET ${skip_idx}
+    SELECT 
+        a.*,
+        c.name AS course_name,
+        p.full_name AS teacher_name
+    FROM public.announcements a
+    LEFT JOIN public.courses c ON a.course_id = c.id
+    LEFT JOIN public.profiles p ON a.created_by = p.id
+    {where_clause}
+    ORDER BY a.created_at DESC
+    LIMIT ${limit_idx} OFFSET ${skip_idx}
     """
     
     rows = await db.fetch(query, *params)
