@@ -156,3 +156,8 @@ class AddToPoolRequest(BaseModel):
 # Generation Request
 class GenerateRequest(BaseModel):
     student_ids: List[UUID]
+
+class QuizSubmission(BaseModel):
+    answers: List[dict]  # Expects [{"question_id": "...", "selected_answer": "..."}]
+    tab_switches: int = 0
+    time_spent: int = 0

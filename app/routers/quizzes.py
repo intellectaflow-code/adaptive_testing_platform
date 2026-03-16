@@ -10,7 +10,7 @@ from app.database import get_db
 from app.dependencies import get_current_user, require_teacher_up, require_admin_or_hod
 from app.schemas.quizzes import (
     QuizCreate, QuizUpdate, QuizOut,
-    QuizQuestionAdd, QuizPermissionCreate, QuizPermissionOut,
+    QuizQuestionAdd, QuizPermissionCreate, QuizPermissionOut,QuizSubmission
 )
 from app.services.activity import log_activity
 router = APIRouter(prefix="/quizzes", tags=["Quizzes"])
@@ -327,6 +327,92 @@ async def add_question_to_quiz(
         raise HTTPException(status_code=409, detail="Question already in quiz")
     return dict(row)
 
+@router.post("/{quiz_id}/submit", status_code=201)
+async def submit_quiz(
+    quiz_id: str,
+    body: QuizSubmission,
+    current_user: dict = Depends(get_current_user),
+    db: asyncpg.Connection = Depends(get_db),
+):
+    # 1. Fetch quiz and student info
+    quiz = await _get_quiz_or_404(db, quiz_id)
+    student_id = str(current_user["id"])
+
+    # 2. Get scoring data (correct options and marks)
+    correct_options = await db.fetch("""
+        SELECT qo.question_id::text, qo.id::text as correct_option_id, 
+               COALESCE(qq.marks_override, qb.marks) as marks
+        FROM public.quiz_questions qq
+        JOIN public.question_bank qb ON qb.id = qq.question_id
+        JOIN public.question_options qo ON qo.question_id = qb.id
+        WHERE qq.quiz_id = $1 AND qo.is_correct = true
+    """, quiz_id)
+
+    scoring_map = {r["question_id"]: {"opt": r["correct_option_id"], "marks": r["marks"]} 
+                  for r in correct_options}
+
+    total_score = 0.0
+    processed_answers = []
+
+    # 3. Process each answer
+    for ans in body.answers:
+        q_id = str(ans.get("question_id"))
+        selected_opt = str(ans.get("selected_answer")) if ans.get("selected_answer") else None
+        
+        is_correct = False
+        score_awarded = 0.0
+
+        if q_id in scoring_map and selected_opt:
+            if scoring_map[q_id]["opt"] == selected_opt:
+                is_correct = True
+                score_awarded = float(scoring_map[q_id]["marks"])
+                total_score += score_awarded
+        
+        processed_answers.append({
+            "q_id": q_id,
+            "opt_id": selected_opt,
+            "is_correct": is_correct,
+            "score": score_awarded
+        })
+
+    # 4. Database Transaction to save Attempt and Individual Answers
+    async with db.transaction():
+        # Get attempt number
+        res_count = await db.fetchval(
+            "SELECT COUNT(*) FROM public.quiz_attempts WHERE quiz_id = $1 AND student_id = $2",
+            quiz_id, student_id
+        )
+        attempt_num = (res_count or 0) + 1
+
+        # Insert main attempt record
+        # Note: status is set to 'submitted' to satisfy the CHECK constraint
+        attempt_row = await db.fetchrow("""
+            INSERT INTO public.quiz_attempts 
+                (quiz_id, student_id, total_score, status, submitted_at, 
+                 attempt_number, tab_switch_count, time_spent_seconds)
+            VALUES ($1::uuid, $2::uuid, $3, 'submitted', now(), $4, $5, $6)
+            RETURNING id
+        """, quiz_id, student_id, total_score, attempt_num, body.tab_switches, body.time_spent)
+
+        attempt_id = attempt_row["id"]
+
+        # Insert detailed answers into student_answers table
+        for pa in processed_answers:
+            await db.execute("""
+                INSERT INTO public.student_answers 
+                    (attempt_id, question_id, selected_option_id, is_correct, score_awarded)
+                VALUES ($1, $2::uuid, $3::uuid, $4, $5)
+            """, attempt_id, pa["q_id"], pa["opt_id"], pa["is_correct"], pa["score"])
+
+    await log_activity(db, student_id, "submit_teacher_quiz", {"quiz_id": quiz_id, "score": total_score})
+
+    return {
+        "status": "success",
+        "attempt_id": str(attempt_id),
+        "score": total_score,
+        "total_possible": float(quiz["total_marks"] or 0)
+        
+    }
 
 @router.delete("/{quiz_id}/questions/{question_id}", status_code=204)
 async def remove_question_from_quiz(

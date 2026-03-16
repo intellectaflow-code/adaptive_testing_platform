@@ -1,0 +1,13 @@
+{
+  "type": "service_account",
+  "project_id": "arched-broker-487609-b7",
+  "private_key_id": "a7b1d99699cdcc94436b130a1ae1b49e3084fa78",
+  "private_key": "-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQCeds/hEVvUP0PK\nEIewYfs63zrPOkas0bALA2Kex3+RfE7ZN4FL0vnA2itazqwTcHpjw6Y3mq4jVwo6\nAlEuj/hRrIOakRzhQRcthJM+OU5q1k+cflYiKS5dDCY1NGUYtwvWWQgA6c5AHba3\n0sfPFRDmNCUiqmbhn+vu9L79/kJLm2lp7E2gy2w0Nsdiex0hzoe4AN8F9Ouy2fGK\nNdkB8nY2pv9HAUT6NUZ7eCMggk4x2utCg2AUVAyzEKhQ7h/OaOi55IgxrX9SVbE9\nkaoCSwAaRdiDtIU2AZYC4tz/BsxWqBaDUpXiQ9toGU7m3Bq6LOIstA1u9O4Mq/ae\n+Z3g94QxAgMBAAECggEARySSWbqAXr70gVCAirjCoQC9l3HTbx1JCvi/Gwf4Buon\nQDBCNTeH94Q7eK5W5PdXi1i4VDh2u9kE91w49E2gr5JjF07VB3BApqfhr0rtINwM\nq/awVu/kJ9Qfhz15senkP5yDEl3lwjVU5hyUpi0QBDoe/fxA6kTxGLv6z2+KdgSg\nJG5mrWVvRWPNR/0Bw5yvoavTEO7bslre7jwPtcBs6KM4ZVsO5e0bz5eo4GkkS7yL\naKvjT2vsPmu7Hqv+d9zlzd4VLaTB3bYNB7/99TmuX6XSse27BGlkos5ONdaspvVv\nZgsKZzHWXcYs9XEGT/PX9dJk5tFmXlVK6HENqzVHXQKBgQDMism+Umzwwl/itX4S\nj/MHb7EWnDj88VmwL0tDGu34vLJdRUjdmC9kt1qj8a2YREBbvjWlQ2qxbeBiaa/p\nXKqavnGXFBRbF32K90WRZhLZ/OBWjZDxbbT4MmGEQMdFhhI4HvlDK9hS1/2wChY6\nXa44btGBpzCUlUy4yGasxDeEXwKBgQDGVHEFg+l8svjYnlEMaK6RlcLXx9Cv3ZK5\nbqiDWqyo5qJ2nsFADlTDt28qfWyIBAbbTnhPnvwrmKVK3i0JTDkOgQ68W2rFbFfc\nO8ubahAli+J7L5GE/XK5mkq3B/hQ5l8EPFtWeB8BkQ0yeQLaVzQSqoXZ9ng3iTYc\nghl2SFdBbwKBgQCBcoRjEr8nT5xnWf1Duh5QYntsl8npKsVcH1I+UdixRpqLNMH8\nm8fCsdeHUfhPGUKxzRseUCBB0gvjvIc75Q2DiWtR9b88Nw2Y2Q0KC9N6afOAU2+b\nm5agTSIyFN0IPuVg5xlRTXpGU7OVqYyPu6H6zQeCSlEQd7xqZUm1pSiNeQKBgFXV\n/gRxDwCVRPYbruA7/jGsK2PQaxVyRCpVJkGTYN7I0s+b7e+XREBgh5BQMES92WnZ\nEGEFYgZMTl2UwtEfWCJa4NHMju1a8ruydXCR+uMFI8RE1ipEtv51NJj6rhH1YnIm\n3TETU/gNmzSZAw8UZskdXEj1TxpaHD1CYVq7/GepAoGANCsoZgocsDGSt20ZGL9S\nh26GBYQ8rUA/CIdktSpKWmHaODu7fbwGMnzv0y2/kp8vMcHJUTaC8tG0fmjRBj9w\nudatfSjuIKVMaQfYfp7cn7UuVAZ8pfBZ1+XMzFU8/3lcRsp4t/TdoK++wEdf6mBy\ns/20p72D8LVyn7ll6OzNe48=\n-----END PRIVATE KEY-----\n",
+  "client_email": "vertex-ai@arched-broker-487609-b7.iam.gserviceaccount.com",
+  "client_id": "112289903277260925878",
+  "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+  "token_uri": "https://oauth2.googleapis.com/token",
+  "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+  "client_x509_cert_url": "https://www.googleapis.com/robot/v1/metadata/x509/vertex-ai%40arched-broker-487609-b7.iam.gserviceaccount.com",
+  "universe_domain": "googleapis.com"
+}

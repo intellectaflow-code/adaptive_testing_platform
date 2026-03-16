@@ -336,7 +336,7 @@ async def get_attempt(
     return dict(attempt)
 
 
-@router.get("/{attempt_id}/answers", response_model=List[StudentAnswerOut])
+@router.get("/{attempt_id}/answers")
 async def get_attempt_answers(
     attempt_id: str,
     current_user: dict = Depends(get_current_user),
@@ -346,57 +346,98 @@ async def get_attempt_answers(
 
     if current_user["role"] == "student":
         await _assert_attempt_owner(attempt, current_user)
+
         quiz = await db.fetchrow(
             "SELECT show_results_immediately FROM public.quizzes WHERE id = $1",
             str(attempt["quiz_id"]),
         )
+
         if not quiz["show_results_immediately"]:
             raise HTTPException(status_code=403, detail="Detailed results not yet available")
 
     rows = await db.fetch(
-        "SELECT * FROM public.student_answers WHERE attempt_id = $1 ORDER BY id", attempt_id
+        """
+        SELECT
+            sa.question_id,
+            sa.selected_option_id AS selected_answer,
+            sa.is_correct,
+            qb.question_text,
+            qb.explanation,
+            qo.id AS option_id,
+            qo.option_text,
+            qo.is_correct AS option_correct
+        FROM public.student_answers sa
+        JOIN public.question_bank qb ON qb.id = sa.question_id
+        JOIN public.question_options qo ON qo.question_id = qb.id
+        WHERE sa.attempt_id = $1
+        ORDER BY qb.id
+        """,
+        attempt_id
     )
-    return [dict(r) for r in rows]
 
+    question_map = {}
 
-# ---- Manual grading ----
+    for r in rows:
+        qid = str(r["question_id"])
+
+        if qid not in question_map:
+            question_map[qid] = {
+                "question_text": r["question_text"],
+                "selected_answer": str(r["selected_answer"]) if r["selected_answer"] else None,
+                "correct_answer": None,
+                "is_correct": r["is_correct"],
+                "options": [],
+                "explanation": r["explanation"]
+            }
+
+        question_map[qid]["options"].append({
+            "id": str(r["option_id"]),
+            "option_text": r["option_text"]
+        })
+
+        if r["option_correct"]:
+            question_map[qid]["correct_answer"] = str(r["option_id"])
+
+    return list(question_map.values())
+
+    # ---- Manual grading ----
 
 @router.post("/{attempt_id}/grade", response_model=List[StudentAnswerOut])
 async def manual_grade(
-    attempt_id: str,
-    grades: List[ManualGradeIn],
-    current_user: dict = Depends(require_teacher_up),
-    db: asyncpg.Connection = Depends(get_db),
-):
-    attempt = await _get_attempt_or_404(db, attempt_id)
-    if attempt["status"] not in ("submitted", "evaluated"):
-        raise HTTPException(status_code=409, detail="Cannot grade an in-progress attempt")
+        attempt_id: str,
+        grades: List[ManualGradeIn],
+        current_user: dict = Depends(require_teacher_up),
+        db: asyncpg.Connection = Depends(get_db),
+    ):
+        attempt = await _get_attempt_or_404(db, attempt_id)
+        if attempt["status"] not in ("submitted", "evaluated"):
+            raise HTTPException(status_code=409, detail="Cannot grade an in-progress attempt")
 
-    async with db.transaction():
-        for g in grades:
+        async with db.transaction():
+            for g in grades:
+                await db.execute(
+                    """
+                    UPDATE public.student_answers SET
+                    score_awarded = $2, is_correct = $3,
+                    evaluated_by = $4, evaluated_at = now()
+                    WHERE id = $1 AND attempt_id = $5
+                    """,
+                    str(g.answer_id), g.score_awarded, g.is_correct,
+                    str(current_user["id"]), attempt_id,
+                )
+
+            total = await recalculate_attempt_score(db, attempt_id)
             await db.execute(
-                """
-                UPDATE public.student_answers SET
-                  score_awarded = $2, is_correct = $3,
-                  evaluated_by = $4, evaluated_at = now()
-                WHERE id = $1 AND attempt_id = $5
-                """,
-                str(g.answer_id), g.score_awarded, g.is_correct,
-                str(current_user["id"]), attempt_id,
+                "UPDATE public.quiz_attempts SET status = 'evaluated', total_score = $1 WHERE id = $2",
+                total, attempt_id,
             )
 
-        total = await recalculate_attempt_score(db, attempt_id)
-        await db.execute(
-            "UPDATE public.quiz_attempts SET status = 'evaluated', total_score = $1 WHERE id = $2",
-            total, attempt_id,
+        await _update_performance_summary(db, str(attempt["student_id"]), str(attempt["quiz_id"]))
+
+        rows = await db.fetch(
+            "SELECT * FROM public.student_answers WHERE attempt_id = $1", attempt_id
         )
-
-    await _update_performance_summary(db, str(attempt["student_id"]), str(attempt["quiz_id"]))
-
-    rows = await db.fetch(
-        "SELECT * FROM public.student_answers WHERE attempt_id = $1", attempt_id
-    )
-    return [dict(r) for r in rows]
+        return [dict(r) for r in rows]
 
 
 # ---- My attempts ----
