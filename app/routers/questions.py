@@ -97,7 +97,6 @@ async def create_question(
     await log_activity(db, str(current_user["id"]), "create_question", {"question_id": q_id})
     return await _enrich_question(db, q)
 
-
 @router.get("", response_model=List[QuestionOut])
 async def list_questions(
     course_id: Optional[str] = Query(None),
@@ -110,6 +109,7 @@ async def list_questions(
     current_user: dict = Depends(require_teacher_up),
     db: asyncpg.Connection = Depends(get_db),
 ):
+    # 1. Build Query
     where_parts = ["q.is_deleted = false", "q.is_active = true", "q.created_by = $1"]
     params: list = [str(current_user["id"])]
     idx = 2
@@ -129,6 +129,8 @@ async def list_questions(
         where_parts.append(f"qt.tag = ${idx}"); params.append(tag.lower()); idx += 1
 
     where = " AND ".join(where_parts)
+    
+    # 2. Fetch all questions in one query
     rows = await db.fetch(
         f"""
         SELECT DISTINCT q.* FROM public.question_bank q {tag_join}
@@ -139,11 +141,40 @@ async def list_questions(
         *params, limit, skip,
     )
 
+    if not rows:
+        return []
+
+    q_ids = [str(r["id"]) for r in rows]
+
+    # 3. Bulk fetch related data in 3 optimized queries
+    # Fetch all options for these questions
+    option_rows = await db.fetch("SELECT * FROM public.question_options WHERE question_id = ANY($1)", q_ids)
+    
+    # Fetch all tags for these questions
+    tag_rows = await db.fetch("SELECT * FROM public.question_tags WHERE question_id = ANY($1)", q_ids)
+    
+    # Check for lock status for all in one go
+    locked_q_rows = await db.fetch("""
+        SELECT DISTINCT qq.question_id 
+        FROM public.quiz_questions qq
+        JOIN public.quizzes q ON qq.quiz_id = q.id
+        WHERE q.is_published = true AND qq.question_id = ANY($1)
+    """, q_ids)
+    locked_set = {str(r["question_id"]) for r in locked_q_rows}
+
+    # 4. Map everything in memory (O(N) complexity)
     result = []
     for row in rows:
-        result.append(await _enrich_question(db, row))
-    return result
+        q_dict = dict(row)
+        q_id = str(q_dict["id"])
+        
+        q_dict["options"] = [dict(o) for o in option_rows if str(o["question_id"]) == q_id]
+        q_dict["tags"] = [t["tag"] for t in tag_rows if str(t["question_id"]) == q_id]
+        q_dict["is_locked"] = q_id in locked_set
+        
+        result.append(q_dict)
 
+    return result
 
 
 @router.get("/{question_id}", response_model=QuestionOut)
