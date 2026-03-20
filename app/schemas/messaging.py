@@ -25,6 +25,9 @@ class AnnouncementOut(BaseModel):
     is_active: bool
     created_at: datetime
 
+    teacher_name: Optional[str] = None   # ✅ ADD
+    course_name: Optional[str] = None
+
 
 class MessageCreate(BaseModel):
     receiver_id: UUID

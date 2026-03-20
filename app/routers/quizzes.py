@@ -115,7 +115,12 @@ async def list_quizzes(
     where = " AND ".join(where_parts)
     rows = await db.fetch(
         f"""
-        SELECT q.* FROM public.quizzes q
+        SELECT 
+            q.*,
+            c.name AS course_name,
+            c.code AS course_code   -- 👈 ADD THIS
+        FROM public.quizzes q
+        JOIN public.courses c ON q.course_id = c.id
         WHERE {where}
         ORDER BY q.created_at DESC
         LIMIT ${idx} OFFSET ${idx+1}
@@ -386,17 +391,15 @@ async def submit_quiz(
 
         # Insert main attempt record
         # Note: status is set to 'submitted' to satisfy the CHECK constraint
-        attempt_row = await db.fetchrow("""
-            INSERT INTO public.quiz_attempts 
-                (quiz_id, student_id, total_score, status, submitted_at, 
-                 attempt_number, tab_switch_count, time_spent_seconds)
-            VALUES ($1::uuid, $2::uuid, $3, 'submitted', now(), $4, $5, $6)
-            RETURNING id
-        """, quiz_id, student_id, total_score, attempt_num, body.tab_switches, body.time_spent)
+        attempt_row = await db.fetchrow(
+            """ INSERT INTO public.quiz_attempts 
+            (quiz_id, student_id, total_score, status, submitted_at, attempt_number, tab_switch_count, time_spent_seconds) 
+            VALUES ($1::uuid, $2::uuid, $3, 'submitted', now(), $4, $5, $6) RETURNING id """,
+              quiz_id, student_id, total_score, attempt_num, body.tab_switches, body.time_spent)
 
         attempt_id = attempt_row["id"]
 
-        # Insert detailed answers into student_answers table
+            # Insert detailed answers into student_answers table
         for pa in processed_answers:
             await db.execute("""
                 INSERT INTO public.student_answers 

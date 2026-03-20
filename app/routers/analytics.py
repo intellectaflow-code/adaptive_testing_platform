@@ -1,373 +1,288 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
 from typing import List, Optional
 import asyncpg
+from uuid import UUID
+from datetime import date, datetime, time, timezone
 
 from app.database import get_db
 from app.dependencies import get_current_user, require_teacher_up, require_student
 from app.schemas.analytics import (
-    QuestionAnalyticsOut, StudentPerformanceOut,
-    AIGeneratedQuestionCreate, AIGeneratedQuestionOut,
+    StudentPerformanceOut, LeaderboardEntry
+
 )
 
 router = APIRouter(prefix="/analytics", tags=["Analytics"])
 
 
-@router.get("/questions/{question_id}", response_model=List[QuestionAnalyticsOut])
-async def question_analytics(
-    question_id: str,
-    _: dict = Depends(require_teacher_up),
+@router.get("/student/dashboard")
+async def student_dashboard(
+    start_date: Optional[date] = Query(None),
+    end_date: Optional[date] = Query(None),
+    current_user: dict = Depends(require_student),
     db: asyncpg.Connection = Depends(get_db),
 ):
-    rows = await db.fetch(
-        "SELECT * FROM public.question_analytics WHERE question_id = $1 ORDER BY updated_at DESC",
-        question_id,
-    )
-    return [dict(r) for r in rows]
+    student_id = str(current_user["id"])
 
+    params = [student_id]
+    param_idx = 2
 
-@router.get("/quiz/{quiz_id}/questions", response_model=List[QuestionAnalyticsOut])
-async def quiz_question_analytics(
-    quiz_id: str,
-    _: dict = Depends(require_teacher_up),
-    db: asyncpg.Connection = Depends(get_db),
-):
-    rows = await db.fetch(
-        "SELECT * FROM public.question_analytics WHERE quiz_id = $1 ORDER BY difficulty_index",
-        quiz_id,
-    )
-    return [dict(r) for r in rows]
+    date_filter_attempt = ""
+    date_filter_trend = ""
 
+    # ✅ Ensure we cover the full day for the end date
+    if start_date:
+        start_dt = datetime.combine(start_date, time.min)  # 00:00:00
+        date_filter_attempt += f" AND attempt_date >= ${param_idx}"
+        date_filter_trend  += f" AND submitted_at >= ${param_idx}"
+        params.append(start_dt)
+        param_idx += 1
 
-@router.get("/quiz/{quiz_id}/summary")
-async def quiz_summary(
-    quiz_id: str,
-    current_user: dict = Depends(require_teacher_up),
-    db: asyncpg.Connection = Depends(get_db),
-):
-    """Aggregate stats for a quiz."""
-    row = await db.fetchrow(
-        """
-        SELECT
-          COUNT(DISTINCT a.student_id)            AS unique_students,
-          COUNT(*)                                  AS total_attempts,
-          AVG(a.total_score)                        AS avg_score,
-          MAX(a.total_score)                        AS max_score,
-          MIN(a.total_score)                        AS min_score,
-          STDDEV(a.total_score)                     AS stddev_score,
-          AVG(a.time_spent_seconds)                 AS avg_time_seconds,
-          SUM(CASE WHEN a.cheating_flag THEN 1 ELSE 0 END) AS cheating_flags,
-          COUNT(*) FILTER (WHERE a.status = 'submitted')  AS submitted_count,
-          COUNT(*) FILTER (WHERE a.status = 'evaluated')  AS evaluated_count
-        FROM public.quiz_attempts a
-        WHERE a.quiz_id = $1
-        """,
-        quiz_id,
-    )
-    quiz = await db.fetchrow(
-        "SELECT title, passing_marks, total_marks FROM public.quizzes WHERE id = $1", quiz_id
-    )
-    if not quiz:
-        raise HTTPException(status_code=404, detail="Quiz not found")
+    if end_date:
+        end_dt = datetime.combine(end_date, time.max)  # 23:59:59.999999
+        date_filter_attempt += f" AND attempt_date <= ${param_idx}"
+        date_filter_trend  += f" AND submitted_at <= ${param_idx}"
+        params.append(end_dt)
+        param_idx += 1
 
-    stats = dict(row)
-    # Pass rate
-    if quiz["passing_marks"] and stats["total_attempts"]:
-        pass_count = await db.fetchval(
-            "SELECT COUNT(*) FROM public.quiz_attempts WHERE quiz_id = $1 AND total_score >= $2",
-            quiz_id, quiz["passing_marks"],
+    stats = await db.fetchrow(f"""
+        SELECT 
+            COUNT(*) as tests_taken,
+            COALESCE(AVG(score), 0) as avg_score,
+            COALESCE(MAX(score), 0) as best_score
+        FROM student_attempts_view
+        WHERE student_id = $1 {date_filter_attempt}
+    """, *params)
+
+    subjects = await db.fetch(f"""
+        SELECT subject,
+            COUNT(*) as tests_taken,
+            AVG(score) as avg_score
+        FROM student_attempts_view
+        WHERE student_id = $1 {date_filter_attempt}
+        GROUP BY subject
+    """, *params)
+
+    trend = await db.fetch(f"""
+        SELECT quiz, total_score, submitted_at
+        FROM student_score_trend
+        WHERE student_id = $1 {date_filter_trend}
+        ORDER BY submitted_at DESC
+    """, *params)
+    date_filter_attempt_qa = date_filter_attempt.replace("attempt_date", "qa.submitted_at")
+    attempts = await db.fetch(f"""
+        SELECT 
+            qa.id AS attempt_id,
+            q.title AS test_title,
+            c.name AS subject,
+            qa.time_spent_seconds,
+            qa.submitted_at AS attempt_date,
+            'teacher' AS type,
+            COUNT(sa.question_id) AS total_questions,
+            COUNT(CASE WHEN sa.is_correct THEN 1 END) AS correct_answers
+        FROM quiz_attempts qa
+        JOIN quizzes q ON q.id = qa.quiz_id
+        JOIN courses c ON c.id = q.course_id
+        LEFT JOIN student_answers sa ON sa.attempt_id = qa.id
+        WHERE qa.student_id = $1 
+        {date_filter_attempt_qa}
+        GROUP BY qa.id, q.title, c.name, qa.time_spent_seconds, qa.submitted_at
+        ORDER BY qa.submitted_at DESC
+    """, *params)
+
+        # ✅ Process attempts FIRST
+    formatted_attempts = []
+
+    for a in attempts:
+            correct = a["correct_answers"] or 0
+            total = a["total_questions"] or 0
+
+            accuracy = round((correct / total) * 100) if total > 0 else 0
+
+            formatted_attempts.append({
+                "attempt_id": a["attempt_id"],
+                "test_title": a["test_title"],
+                "subject": a["subject"],
+                "type": a["type"],
+                "attempt_date": a["attempt_date"],
+                "time_spent_seconds": a["time_spent_seconds"],
+                "correct": correct,
+                "total_questions": total,
+                "accuracy": accuracy
+            })
+
+    rank_row = await db.fetchrow("""
+        SELECT ranked.rank
+        FROM (
+            SELECT student_id,
+                RANK() OVER (ORDER BY AVG(score) DESC) AS rank
+            FROM student_attempts_view
+            GROUP BY student_id
+        ) ranked
+        WHERE ranked.student_id = $1
+    """, student_id)
+
+    # ── Streak: count consecutive days (up to today) with at least one attempt ──
+    streak_row = await db.fetchrow("""
+        WITH daily AS (
+            SELECT DISTINCT DATE(attempt_date) AS day
+            FROM student_attempts_view
+            WHERE student_id = $1
+        ),
+        numbered AS (
+            SELECT day,
+                ROW_NUMBER() OVER (ORDER BY day DESC) AS rn
+            FROM daily
+        ),
+        streaks AS (
+            SELECT day, rn,
+                (day + (rn || ' days')::interval)::date AS grp
+            FROM numbered
         )
-        stats["pass_rate"] = round(pass_count / stats["total_attempts"] * 100, 2)
-    else:
-        stats["pass_rate"] = None
+        SELECT COUNT(*) AS streak
+        FROM streaks
+        WHERE grp = (
+            SELECT (day + (rn || ' days')::interval)::date
+            FROM streaks
+            WHERE day = (SELECT MAX(day) FROM daily)
+            LIMIT 1
+        )
+    """, student_id)
 
-    stats["quiz_title"] = quiz["title"]
-    stats["passing_marks"] = quiz["passing_marks"]
-    stats["total_marks"] = quiz["total_marks"]
-    return stats
-
-
-@router.get("/student/{student_id}/performance", response_model=List[StudentPerformanceOut])
-async def student_performance(
-    student_id: str,
-    current_user: dict = Depends(get_current_user),
-    db: asyncpg.Connection = Depends(get_db),
-):
-    if current_user["role"] == "student" and str(current_user["id"]) != student_id:
-        raise HTTPException(status_code=403, detail="Cannot view another student's performance")
-
-    rows = await db.fetch(
-        "SELECT * FROM public.student_performance_summary WHERE student_id = $1 ORDER BY last_updated DESC",
-        student_id,
-    )
-    return [dict(r) for r in rows]
-
-
-@router.get("/course/{course_id}/leaderboard")
-async def course_leaderboard(
-    course_id: str,
-    limit: int = Query(20, ge=1, le=100),
-    current_user: dict = Depends(get_current_user),
-    db: asyncpg.Connection = Depends(get_db),
-):
-    rows = await db.fetch(
-        """
-        SELECT
-            p.full_name, p.usn,
-            sps.quizzes_taken, sps.average_score,
-            sps.highest_score, sps.lowest_score
-        FROM public.student_performance_summary sps
-        JOIN public.profiles p ON p.id = sps.student_id
-        WHERE sps.course_id = $1
-        ORDER BY sps.average_score DESC NULLS LAST
-        LIMIT $2
-        """,
-        course_id, limit,
-    )
-    return [dict(r) for r in rows]
-
-
-@router.get("/course/{course_id}/overview")
-async def course_analytics_overview(
-    course_id: str,
-    current_user: dict = Depends(require_teacher_up),
-    db: asyncpg.Connection = Depends(get_db),
-):
-    """High level course analytics."""
-    quizzes = await db.fetchval(
-        "SELECT COUNT(*) FROM public.quizzes WHERE course_id = $1 AND is_deleted = false", course_id
-    )
-    students = await db.fetchval(
-        "SELECT COUNT(*) FROM public.enrollments WHERE course_id = $1", course_id
-    )
-    attempts = await db.fetchval(
-        """
-        SELECT COUNT(*) FROM public.quiz_attempts a
-        JOIN public.quizzes q ON q.id = a.quiz_id
-        WHERE q.course_id = $1
-        """,
-        course_id,
-    )
-    avg_score = await db.fetchval(
-        """
-        SELECT AVG(a.total_score) FROM public.quiz_attempts a
-        JOIN public.quizzes q ON q.id = a.quiz_id
-        WHERE q.course_id = $1 AND a.status IN ('submitted','evaluated')
-        """,
-        course_id,
-    )
+    # ✅ THEN return
     return {
-        "total_quizzes": quizzes,
-        "total_students": students,
-        "total_attempts": attempts,
-        "average_score": round(float(avg_score), 2) if avg_score else None,
+        "stats": {
+            **(dict(stats) if stats else {"tests_taken": 0, "avg_score": 0, "best_score": 0}),
+            "rank":   int(rank_row["rank"])   if rank_row   else None,
+            "streak": int(streak_row["streak"]) if streak_row else 0,
+        },
+        "subjects":  [dict(r) for r in subjects]  if subjects  else [],
+        "trend":     [dict(r) for r in trend]      if trend      else [],
+        "attempts":  formatted_attempts,
     }
 
 
-# ---- AI Generated Questions ----
-
-@router.post("/ai-questions", response_model=AIGeneratedQuestionOut, status_code=201)
-async def create_ai_question(
-    body: AIGeneratedQuestionCreate,
-    current_user: dict = Depends(require_teacher_up),
+@router.get("/attempt/{attempt_id}")
+async def get_attempt_details(
+    attempt_id: UUID,
+    current_user: dict = Depends(require_student),
     db: asyncpg.Connection = Depends(get_db),
 ):
-    row = await db.fetchrow(
-        """
-        INSERT INTO public.ai_generated_questions
-          (course_id, generated_text, syllabus_reference, difficulty)
-        VALUES ($1,$2,$3,$4) RETURNING *
-        """,
-        str(body.course_id), body.generated_text,
-        body.syllabus_reference, body.difficulty,
-    )
-    return dict(row)
+    student_id = str(current_user["id"])
 
+    # =========================
+    # 1. FETCH ATTEMPT SUMMARY
+    # =========================
+    attempt = await db.fetchrow("""
+        SELECT qa.id, qa.total_score, qa.time_spent_seconds, qa.tab_switch_count,
+               q.title, c.name AS subject
+        FROM quiz_attempts qa
+        JOIN quizzes q ON q.id = qa.quiz_id
+        JOIN courses c ON c.id = q.course_id
+        WHERE qa.id = $1 AND qa.student_id = $2
+    """, str(attempt_id), student_id)
 
-@router.get("/ai-questions", response_model=List[AIGeneratedQuestionOut])
-async def list_ai_questions(
-    course_id: Optional[str] = Query(None),
-    approved: Optional[bool] = Query(None),
-    skip: int = 0,
-    limit: int = 50,
-    _: dict = Depends(require_teacher_up),
+    if not attempt:
+        raise HTTPException(status_code=404, detail="Attempt not found")
+
+    # =========================
+    # 2. FETCH QUESTIONS + ANSWERS
+    # =========================
+    rows = await db.fetch("""
+        SELECT 
+            qb.id AS question_id,
+            qb.question_text,
+            qb.explanation,
+
+            qo.id AS option_id,
+            qo.option_text,
+            qo.is_correct,
+
+            sa.selected_option_id,
+            sa.is_correct AS user_correct
+
+        FROM student_answers sa
+        JOIN question_bank qb ON qb.id = sa.question_id
+        JOIN question_options qo ON qo.question_id = qb.id
+
+        WHERE sa.attempt_id = $1
+        ORDER BY qb.id
+    """, str(attempt_id))
+
+    # =========================
+    # 3. TRANSFORM DATA
+    # =========================
+    questions_map = {}
+
+    for r in rows:
+        qid = str(r["question_id"])
+
+        if qid not in questions_map:
+            questions_map[qid] = {
+                "question_text": r["question_text"],
+                "correct_answer": None,
+                "selected_answer": str(r["selected_option_id"]) if r["selected_option_id"] else None,
+                "is_correct": r["user_correct"],
+                "explanation": r["explanation"],
+                "options": []
+            }
+
+        # identify correct option
+        if r["is_correct"]:
+            questions_map[qid]["correct_answer"] = str(r["option_id"])
+
+        questions_map[qid]["options"].append({
+            "id": str(r["option_id"]),
+            "option_text": r["option_text"]
+        })
+
+    questions = list(questions_map.values())
+
+    # =========================
+    # 4. RETURN FINAL RESPONSE
+    # =========================
+    return {
+        "score": float(attempt["total_score"] or 0),
+        "time_spent_seconds": attempt["time_spent_seconds"] or 0,
+        "tabs": attempt["tab_switch_count"] or 0,
+        "config": {
+            "title": attempt["title"],
+            "subject": attempt["subject"],
+            "type": "teacher"
+        },
+        "questions": questions,
+        "correct": sum(1 for q in questions if q["is_correct"]),
+        "total": len(questions),
+    }
+
+@router.get("/leaderboard", response_model=List[LeaderboardEntry])
+async def get_leaderboard(
+    course_id: UUID,
+    current_user: dict = Depends(require_student),
     db: asyncpg.Connection = Depends(get_db),
 ):
-    where_parts = ["1=1"]
-    params: list = []
-    idx = 1
-    if course_id:
-        where_parts.append(f"course_id = ${idx}"); params.append(course_id); idx += 1
-    if approved is not None:
-        where_parts.append(f"approved = ${idx}"); params.append(approved); idx += 1
+    user_id = current_user["id"]
 
-    where = " AND ".join(where_parts)
-    rows = await db.fetch(
-        f"SELECT * FROM public.ai_generated_questions WHERE {where} ORDER BY created_at DESC LIMIT ${idx} OFFSET ${idx+1}",
-        *params, limit, skip,
-    )
-    return [dict(r) for r in rows]
+    rows = await db.fetch("""
+        SELECT student_id, full_name, avg_score, rank
+        FROM public.course_leaderboard_view
+        WHERE course_id = $1
+        ORDER BY rank ASC
+    """, course_id)
 
+    result = []
 
-@router.post("/ai-questions/{ai_q_id}/approve", response_model=AIGeneratedQuestionOut)
-async def approve_ai_question(
-    ai_q_id: str,
-    current_user: dict = Depends(require_teacher_up),
-    db: asyncpg.Connection = Depends(get_db),
-):
-    row = await db.fetchrow(
-        "UPDATE public.ai_generated_questions SET approved = true, approved_by = $2 WHERE id = $1 RETURNING *",
-        ai_q_id, str(current_user["id"]),
-    )
-    if not row:
-        raise HTTPException(status_code=404, detail="AI question not found")
-    return dict(row)
+    for r in rows:
+        name = r["full_name"] or ""
 
-@router.get("/course/{course_id}/student-performance")
-async def teacher_student_performance(
-    course_id: str,
-    _: dict = Depends(require_teacher_up),
-    db: asyncpg.Connection = Depends(get_db),
-):
+        initials = "".join([n[0].upper() for n in name.split()[:2]]) if name else "?"
 
-    rows = await db.fetch(
-        """
-        SELECT
-            p.id as student_id,
-            p.full_name,
-            p.usn,
+        result.append({
+            "rank": r["rank"],
+            "student_id": r["student_id"],
+            "name": name,
+            "score": round((r["avg_score"] or 0) * 100, 2),
+            "isMe": r["student_id"] == user_id,
+            "initials": initials
+        })
 
-            COUNT(a.id) as attempts,
-            ROUND(AVG(a.total_score)::numeric,2) as average_score,
-            MAX(a.total_score) as highest_score,
-
-            MAX(a.total_score) - MIN(a.total_score) as improvement
-
-        FROM public.quiz_attempts a
-        JOIN public.quizzes q ON q.id = a.quiz_id
-        JOIN public.profiles p ON p.id = a.student_id
-
-        WHERE q.course_id = $1
-        AND a.status IN ('submitted','evaluated')
-
-        GROUP BY p.id, p.full_name, p.usn
-        ORDER BY average_score DESC
-        """,
-        course_id,
-    )
-
-    return [dict(r) for r in rows]
-
-@router.get("/student/{student_id}/score-trend")
-async def score_trend(
-    student_id: str,
-    current_user: dict = Depends(get_current_user),
-    db: asyncpg.Connection = Depends(get_db),
-):
-
-    if current_user["role"] == "student" and str(current_user["id"]) != student_id:
-        raise HTTPException(status_code=403, detail="Cannot view another student's data")
-
-    rows = await db.fetch(
-        """
-        SELECT
-            q.title as quiz,
-            a.total_score,
-            a.submitted_at
-        FROM public.quiz_attempts a
-        JOIN public.quizzes q ON q.id = a.quiz_id
-        WHERE a.student_id = $1
-        AND a.status IN ('submitted','evaluated')
-        ORDER BY a.submitted_at
-        """,
-        student_id,
-    )
-
-    return [dict(r) for r in rows]
-
-@router.get("/course/{course_id}/weak-students")
-async def weak_students(
-    course_id: str,
-    _: dict = Depends(require_teacher_up),
-    db: asyncpg.Connection = Depends(get_db),
-):
-
-    rows = await db.fetch(
-        """
-        SELECT
-            p.full_name,
-            p.usn,
-            AVG(a.total_score) as avg_score
-
-        FROM public.quiz_attempts a
-        JOIN public.quizzes q ON q.id = a.quiz_id
-        JOIN public.profiles p ON p.id = a.student_id
-
-        WHERE q.course_id = $1
-        AND a.status IN ('submitted','evaluated')
-
-        GROUP BY p.full_name, p.usn
-        HAVING AVG(a.total_score) < 40
-        ORDER BY avg_score ASC
-        """,
-        course_id,
-    )
-
-    return [dict(r) for r in rows]
-
-@router.get("/course/{course_id}/top-performers")
-async def top_performers(
-    course_id: str,
-    limit: int = Query(5, ge=1, le=50),
-    _: dict = Depends(require_teacher_up),
-    db: asyncpg.Connection = Depends(get_db),
-):
-
-    rows = await db.fetch(
-        """
-        SELECT
-            p.full_name,
-            p.usn,
-            AVG(a.total_score) as avg_score,
-            MAX(a.total_score) as highest_score
-
-        FROM public.quiz_attempts a
-        JOIN public.quizzes q ON q.id = a.quiz_id
-        JOIN public.profiles p ON p.id = a.student_id
-
-        WHERE q.course_id = $1
-        AND a.status IN ('submitted','evaluated')
-
-        GROUP BY p.full_name, p.usn
-        ORDER BY avg_score DESC
-        LIMIT $2
-        """,
-        course_id,
-        limit,
-    )
-
-    return [dict(r) for r in rows]
-
-@router.get("/course/{course_id}/class-summary")
-async def class_summary(
-    course_id: str,
-    _: dict = Depends(require_teacher_up),
-    db: asyncpg.Connection = Depends(get_db),
-):
-
-    row = await db.fetchrow(
-        """
-        SELECT
-            COUNT(DISTINCT a.student_id) as total_students,
-            COUNT(*) as total_attempts,
-            AVG(a.total_score) as class_average,
-            MAX(a.total_score) as highest_score,
-            MIN(a.total_score) as lowest_score
-        FROM public.quiz_attempts a
-        JOIN public.quizzes q ON q.id = a.quiz_id
-        WHERE q.course_id = $1
-        AND a.status IN ('submitted','evaluated')
-        """,
-        course_id,
-    )
-
-    return dict(row)
+    return result

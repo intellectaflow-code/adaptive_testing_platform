@@ -62,6 +62,8 @@ class QuizOut(BaseModel):
     start_time: Optional[datetime] = None
     end_time: Optional[datetime] = None
     randomize_questions: bool
+    course_name: Optional[str] = None  
+    course_code: Optional[str] = None 
     randomize_options: bool
     allow_multiple_attempts: bool
     max_attempts: int

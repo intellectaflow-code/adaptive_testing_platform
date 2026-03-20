@@ -17,11 +17,23 @@ async def create_announcement(
 ):
     row = await db.fetchrow(
         """
-        INSERT INTO public.announcements (course_id, created_by, title, message)
-        VALUES ($1, $2, $3, $4) RETURNING *
+        SELECT 
+            a.*,
+            p.full_name AS teacher_name,
+            c.name AS course_name
+        FROM public.announcements a
+        LEFT JOIN public.profiles p ON a.created_by = p.id
+        LEFT JOIN public.courses c ON a.course_id = c.id
+        WHERE a.id = (
+            INSERT INTO public.announcements (course_id, created_by, title, message)
+            VALUES ($1, $2, $3, $4)
+            RETURNING id
+        )
         """,
         str(body.course_id) if body.course_id else None,
-        str(current_user["id"]), body.title, body.message,
+        str(current_user["id"]),
+        body.title,
+        body.message,
     )
     return dict(row)
 
@@ -48,7 +60,7 @@ async def list_announcements(
         params.append(str(current_user["id"]))
     else:
         # Teachers/HODs see: ONLY what they created
-        where_parts.append(f"created_by = ${len(params) + 1}")
+        where_parts.append(f"a.created_by = ${len(params) + 1}")
         params.append(str(current_user["id"]))
 
     # 2. Specific Course Filtering (if requested)
@@ -92,7 +104,17 @@ async def get_announcement(
     db: asyncpg.Connection = Depends(get_db),
 ):
     row = await db.fetchrow(
-        "SELECT * FROM public.announcements WHERE id = $1", announcement_id
+        """
+        SELECT 
+            a.*,
+            p.full_name AS teacher_name,
+            c.name AS course_name
+        FROM public.announcements a
+        LEFT JOIN public.profiles p ON a.created_by = p.id
+        LEFT JOIN public.courses c ON a.course_id = c.id
+        WHERE a.id = $1
+        """,
+        announcement_id
     )
     if not row:
         raise HTTPException(status_code=404, detail="Announcement not found")
@@ -112,8 +134,24 @@ async def update_announcement(
 
     set_clause = ", ".join(f"{k} = ${i+2}" for i, k in enumerate(updates.keys()))
     row = await db.fetchrow(
-        f"UPDATE public.announcements SET {set_clause} WHERE id = $1 AND created_by = ${len(updates)+2} RETURNING *",
-        announcement_id, *updates.values(), str(current_user["id"]),
+        f"""
+        WITH updated AS (
+            UPDATE public.announcements
+            SET {set_clause}
+            WHERE id = $1 AND created_by = ${len(updates)+2}
+            RETURNING *
+        )
+        SELECT 
+            u.*,
+            p.full_name AS teacher_name,
+            c.name AS course_name
+        FROM updated u
+        LEFT JOIN public.profiles p ON u.created_by = p.id
+        LEFT JOIN public.courses c ON u.course_id = c.id
+        """,
+        announcement_id,
+        *updates.values(),
+        str(current_user["id"]),
     )
     if not row:
         raise HTTPException(status_code=404, detail="Announcement not found or not your announcement")
