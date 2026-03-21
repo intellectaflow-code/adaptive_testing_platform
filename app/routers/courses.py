@@ -111,10 +111,21 @@ async def list_courses(
     if current_user["role"] == "student":
         rows = await db.fetch(
             """
-            SELECT c.* FROM public.courses c
-            JOIN public.enrollments e ON e.course_id = c.id
-            WHERE e.student_id = $1 AND c.is_deleted = false
-            ORDER BY c.name
+            SELECT 
+                c.*,
+                STRING_AGG(p.full_name, ', ' ORDER BY p.full_name) AS teacher_name
+            FROM public.courses c
+            JOIN public.enrollments e 
+                ON e.course_id = c.id AND e.student_id = $1
+            LEFT JOIN public.course_teachers ct 
+                ON ct.course_id = c.id
+            LEFT JOIN public.profiles p 
+                ON p.id = ct.teacher_id 
+                AND p.is_deleted = false 
+                AND p.role = 'teacher'
+            WHERE c.is_deleted = false
+            GROUP BY c.id
+            ORDER BY c.name 
             LIMIT $2 OFFSET $3
             """,
             str(current_user["id"]), limit, skip,

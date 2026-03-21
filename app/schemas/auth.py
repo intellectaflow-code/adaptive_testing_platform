@@ -1,7 +1,7 @@
 from fastapi import HTTPException
 from pydantic import BaseModel, EmailStr, field_validator
 from typing import Optional
-
+import re
 
 class RegisterRequest(BaseModel):
     email: EmailStr
@@ -13,15 +13,34 @@ class RegisterRequest(BaseModel):
     semester: Optional[int] = None
     section: Optional[str] = None
 
+    # ✅ Email validation (keep this)
     @field_validator("email")
     @classmethod
     def validate_mite_domain(cls, v: str) -> str:
         if not v.endswith("@mite.ac.in"):
-            raise HTTPException(
-                status_code=400,
-                detail="Only @mite.ac.in email addresses are allowed."
-            )
+            raise ValueError("Only @mite.ac.in email addresses are allowed.")
         return v.lower()
+
+    # ✅ NEW: Strong password validation
+    @field_validator("password")
+    @classmethod
+    def validate_password(cls, v: str) -> str:
+        if len(v) < 8:
+            raise ValueError("Password must be at least 8 characters long")
+
+        if not re.search(r"[A-Z]", v):
+            raise ValueError("Password must contain at least one uppercase letter")
+
+        if not re.search(r"[a-z]", v):
+            raise ValueError("Password must contain at least one lowercase letter")
+
+        if not re.search(r"\d", v):
+            raise ValueError("Password must contain at least one number")
+
+        if not re.search(r"[!@#$%^&*(),.?\":{}|<>]", v):
+            raise ValueError("Password must contain at least one special character")
+
+        return v
 
 
 class LoginRequest(BaseModel):

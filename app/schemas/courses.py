@@ -27,6 +27,7 @@ class CourseOut(BaseModel):
     created_by: Optional[UUID] = None
     created_at: datetime
     updated_at: datetime
+    teacher_name: Optional[str] = None
 
 
 class AssignTeacherIn(BaseModel):

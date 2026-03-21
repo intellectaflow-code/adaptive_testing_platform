@@ -11,7 +11,7 @@ from app.config import get_settings
 from app.database import create_pool, close_pool
 from app.routers import (
     profiles, courses, questions, quizzes,
-    attempts, analytics, announcements, messages, admin, auth,teachers_dashboard, syllabus_to_quiz
+    attempts, analytics, announcements, messages, admin, auth, teachers_dashboard, syllabus_to_quiz, settings
 )
 from app.routers import ai_quiz
 
@@ -22,11 +22,10 @@ logging.basicConfig(
     format="%(asctime)s  %(levelname)-8s  %(name)s: %(message)s",
     handlers=[logging.StreamHandler(sys.stdout)],
 )
-# Quieten noisy asyncpg logs
 logging.getLogger("asyncpg").setLevel(logging.WARNING)
 logger = logging.getLogger("quiz")
 
-settings = get_settings()
+config = get_settings()  # renamed from 'settings' to 'config' to avoid conflict
 
 
 # ── Lifespan ─────────────────────────────────────────────────────────────────
@@ -34,9 +33,9 @@ settings = get_settings()
 async def lifespan(app: FastAPI):
     logger.info("=" * 60)
     logger.info("  🎓  Quiz Platform API  —  DEV MODE")
-    logger.info("  ENV:      %s", settings.app_env)
-    logger.info("  DEBUG:    %s", settings.debug)
-    logger.info("  ORIGINS:  %s", settings.allowed_origins)
+    logger.info("  ENV:      %s", config.app_env)
+    logger.info("  DEBUG:    %s", config.debug)
+    logger.info("  ORIGINS:  %s", config.allowed_origins)
     logger.info("=" * 60)
     await create_pool()
     yield
@@ -53,7 +52,7 @@ app = FastAPI(
         "📌 All routes are prefixed `/api/v1`"
     ),
     version="1.0.0-dev",
-    debug=True,           # shows full Python tracebacks in /docs error responses
+    debug=True,
     lifespan=lifespan,
     docs_url="/docs",
     redoc_url="/redoc",
@@ -62,13 +61,13 @@ app = FastAPI(
 # ── CORS – open in dev ────────────────────────────────────────────────────────
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"], # Your React URL
+    allow_origins=["http://localhost:3000"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# ── Dev error handler – return full traceback in JSON ─────────────────────────
+# ── Dev error handler ─────────────────────────────────────────────────────────
 @app.exception_handler(Exception)
 async def dev_exception_handler(request: Request, exc: Exception):
     tb = traceback.format_exc()
@@ -78,7 +77,7 @@ async def dev_exception_handler(request: Request, exc: Exception):
         content={
             "detail": str(exc),
             "type": type(exc).__name__,
-            "traceback": tb.splitlines(),   # handy for Postman / curl dev
+            "traceback": tb.splitlines(),
         },
     )
 
@@ -99,27 +98,26 @@ async def log_requests(request: Request, call_next):
 # ── Routers ───────────────────────────────────────────────────────────────────
 PREFIX = "/api/v1"
 
-app.include_router(auth.router,          prefix=PREFIX)
-app.include_router(profiles.router,      prefix=PREFIX)
-app.include_router(courses.router,       prefix=PREFIX)
-app.include_router(questions.router,     prefix=PREFIX)
-app.include_router(quizzes.router,       prefix=PREFIX)
-app.include_router(attempts.router,      prefix=PREFIX)
-app.include_router(analytics.router,     prefix=PREFIX)
-app.include_router(announcements.router, prefix=PREFIX)
-app.include_router(messages.router,      prefix=PREFIX)
-app.include_router(admin.router,         prefix=PREFIX)
-app.include_router(teachers_dashboard.router,         prefix=PREFIX)
-app.include_router(syllabus_to_quiz.router,         prefix=PREFIX)
-# 
-app.include_router(ai_quiz.router, prefix=PREFIX)
-# teachers_dashboard
+app.include_router(auth.router,                 prefix=PREFIX)
+app.include_router(profiles.router,             prefix=PREFIX)
+app.include_router(courses.router,              prefix=PREFIX)
+app.include_router(questions.router,            prefix=PREFIX)
+app.include_router(quizzes.router,              prefix=PREFIX)
+app.include_router(attempts.router,             prefix=PREFIX)
+app.include_router(analytics.router,            prefix=PREFIX)
+app.include_router(announcements.router,        prefix=PREFIX)
+app.include_router(messages.router,             prefix=PREFIX)
+app.include_router(admin.router,                prefix=PREFIX)
+app.include_router(teachers_dashboard.router,   prefix=PREFIX)
+app.include_router(syllabus_to_quiz.router,     prefix=PREFIX)
+app.include_router(settings.router,             prefix=PREFIX)
+app.include_router(ai_quiz.router,              prefix=PREFIX)
 
 
 # ── Health / root ─────────────────────────────────────────────────────────────
 @app.get("/health", tags=["Dev"])
 async def health():
-    return {"status": "ok", "env": settings.app_env, "debug": settings.debug}
+    return {"status": "ok", "env": config.app_env, "debug": config.debug}
 
 
 @app.get("/", tags=["Dev"])
@@ -130,4 +128,3 @@ async def root():
         "redoc": "/redoc",
         "health": "/health",
     }
-
