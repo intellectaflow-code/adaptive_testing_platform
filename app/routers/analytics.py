@@ -1,3 +1,5 @@
+from uuid import UUID
+
 from fastapi import APIRouter, Depends, HTTPException, Query
 from typing import List, Optional
 import asyncpg
@@ -286,3 +288,119 @@ async def get_leaderboard(
         })
 
     return result
+
+@router.get("/course/{course_id}/student-performance")
+async def teacher_student_performance(
+    course_id: UUID,
+    _: dict = Depends(require_teacher_up),
+    db: asyncpg.Connection = Depends(get_db),
+):
+    # Mapping your view 'teacher_student_performance'
+    # Columns: student_id, student (full_name), usn, course_id, attempts, average_score, highest_score, improvement
+    rows = await db.fetch(
+        """
+        SELECT 
+            student_id, 
+            student AS full_name, 
+            usn, 
+            attempts, 
+            average_score, 
+            highest_score, 
+            improvement
+        FROM public.teacher_student_performance
+        WHERE course_id = $1
+        ORDER BY average_score DESC
+        """,
+        course_id
+    )
+    return [dict(r) for r in rows]
+
+@router.get("/student/{student_id}/score-trend")
+async def score_trend(
+    student_id: str,
+    current_user: dict = Depends(get_current_user),
+    db: asyncpg.Connection = Depends(get_db),
+):
+
+    if current_user["role"] == "student" and str(current_user["id"]) != student_id:
+        raise HTTPException(status_code=403, detail="Cannot view another student's data")
+
+    rows = await db.fetch(
+        """
+        SELECT
+            q.title as quiz,
+            a.total_score,
+            a.submitted_at
+        FROM public.quiz_attempts a
+        JOIN public.quizzes q ON q.id = a.quiz_id
+        WHERE a.student_id = $1
+        AND a.status IN ('submitted','evaluated')
+        ORDER BY a.submitted_at
+        """,
+        student_id,
+    )
+
+    return [dict(r) for r in rows]
+@router.get("/course/{course_id}/weak-students")
+async def weak_students(
+    course_id: UUID,
+    _: dict = Depends(require_teacher_up),
+    db: asyncpg.Connection = Depends(get_db),
+):
+    # Mapping your view 'weak_students'
+    # Columns: full_name, usn, course_id, avg_score
+    rows = await db.fetch(
+        """
+        SELECT full_name, usn, avg_score
+        FROM public.weak_students
+        WHERE course_id = $1
+        ORDER BY avg_score ASC
+        """,
+        course_id
+    )
+    return [dict(r) for r in rows]
+
+@router.get("/course/{course_id}/top-performers")
+async def top_performers(
+    course_id: UUID,
+    limit: int = Query(5, ge=1, le=50),
+    _: dict = Depends(require_teacher_up),
+    db: asyncpg.Connection = Depends(get_db),
+):
+    # Mapping your view 'top_performers'
+    # Columns: full_name, usn, course_id, avg_score, highest_score
+    rows = await db.fetch(
+        """
+        SELECT full_name, usn, avg_score, highest_score
+        FROM public.top_performers
+        WHERE course_id = $1
+        ORDER BY avg_score DESC
+        LIMIT $2
+        """,
+        course_id, limit
+    )
+    return [dict(r) for r in rows]
+
+
+@router.get("/course/{course_id}/class-summary")
+async def class_summary(
+    course_id: UUID,
+    _: dict = Depends(require_teacher_up),
+    db: asyncpg.Connection = Depends(get_db),
+):
+    # Aggregating directly from quiz_attempts linked to your quizzes table
+    row = await db.fetchrow(
+        """
+        SELECT 
+            COUNT(DISTINCT qa.student_id) as total_students,
+            COUNT(qa.id) as total_attempts,
+            ROUND(AVG(qa.total_score)::numeric, 2) as class_average,
+            MAX(qa.total_score) as highest_score,
+            MIN(qa.total_score) as lowest_score
+        FROM public.quiz_attempts qa
+        JOIN public.quizzes q ON q.id = qa.quiz_id
+        WHERE q.course_id = $1 AND qa.status = 'submitted'
+        """,
+        course_id
+    )
+    return dict(row) if row else {}
