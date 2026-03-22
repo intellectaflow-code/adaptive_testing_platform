@@ -404,3 +404,27 @@ async def class_summary(
         course_id
     )
     return dict(row) if row else {}
+
+
+@router.get("/course/{course_id}/score-trend")
+async def class_score_trend(
+    course_id: UUID,
+    _: dict = Depends(require_teacher_up),
+    db: asyncpg.Connection = Depends(get_db),
+):
+    rows = await db.fetch(
+        """
+        SELECT 
+            DATE(a.submitted_at) as date,
+            ROUND(AVG(a.total_score)::numeric, 2) as avg_score
+        FROM public.quiz_attempts a
+        JOIN public.quizzes q ON q.id = a.quiz_id
+        WHERE q.course_id = $1
+        AND a.status IN ('submitted','evaluated')
+        GROUP BY DATE(a.submitted_at)
+        ORDER BY DATE(a.submitted_at)
+        """,
+        course_id
+    )
+
+    return [dict(r) for r in rows]
