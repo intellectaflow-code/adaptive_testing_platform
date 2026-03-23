@@ -15,7 +15,9 @@ from app.services.activity import log_activity
 
 router = APIRouter(prefix="/courses", tags=["Courses"])
 settings = get_settings()
-storage_client = storage.Client(project=settings.google_project_id)
+
+def get_storage_client():
+    return storage.Client()
 
 # ---- Helpers ----
 
@@ -62,6 +64,7 @@ async def create_course(
 
     # 1. Upload Syllabus to Google Cloud Storage
     try:
+        storage_client = get_storage_client()
         bucket = storage_client.bucket(settings.google_bucket_name)
         # Unique path per course/teacher
         blob_path = f"syllabi/{current_user['id']}/{file.filename}"
