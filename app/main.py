@@ -61,7 +61,7 @@ app = FastAPI(
 # ── CORS – open in dev ────────────────────────────────────────────────────────
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],
+    allow_origins=["http://localhost:3000", "https://adaptivetestingplatfromteachers-759082157852.asia-south1.run.app","https://adaptivetestingplatfromstudents-759082157852.asia-south1.run.app"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
