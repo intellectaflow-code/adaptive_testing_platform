@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, status, Request
 import asyncpg
 
 from app.database import get_db
-from app.schemas.auth import RegisterRequest, LoginRequest, AuthResponse, RefreshRequest
+from app.schemas.auth import RegisterRequest, LoginRequest, AuthResponse, RefreshRequest, ChangePasswordRequest
 from app.services.supabase_client import get_supabase
 from app.dependencies import get_current_user
 from app.services.activity import log_activity
@@ -122,6 +122,41 @@ async def refresh_token(body: RefreshRequest):
         user_id=str(res.user.id),
         email=res.user.email,
     )
+
+@router.put("/password", status_code=204)
+async def change_password(
+    body: ChangePasswordRequest,
+    request: Request,
+    current_user: dict = Depends(get_current_user),
+    db: asyncpg.Connection = Depends(get_db),
+):
+    supabase = get_supabase()
+
+    # Verify current password by re-authenticating
+    try:
+        supabase.auth.admin.update_user_by_id(
+            str(current_user["id"]),   # ← cast to string
+            {"password": body.new_password}
+        )
+    except Exception:
+        raise HTTPException(status_code=401, detail="Current password is incorrect")
+
+    # Update to new password
+    try:
+        supabase.auth.admin.update_user_by_id(
+            current_user["id"],
+            {"password": body.new_password}
+        )
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Password update failed: {str(e)}")
+
+    await log_activity(
+        db,
+        str(current_user["id"]),
+        "password_change",
+        request.client.host if request.client else None,
+    )
+
 
 
 @router.post("/logout", status_code=204)

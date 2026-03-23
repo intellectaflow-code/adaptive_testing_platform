@@ -93,7 +93,9 @@ async def get_current_user(
             detail="Account is inactive. Set is_active=true in the profiles table.",
         )
 
-    return dict(row)
+    user = dict(row)
+    user["id"] = str(user["id"])
+    return user
 
 
 # ── Role guards ───────────────────────────────────────────────────────────────
