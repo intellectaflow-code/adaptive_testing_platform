@@ -1,8 +1,6 @@
 /quiz
 .env
 
-app/config.py
-
 *__pycache__
 *.pyc
 
