@@ -18,7 +18,9 @@ load_dotenv()
 settings = get_settings()
 vertexai.init(project=settings.google_project_id, location=os.getenv("GOOGLE_LOCATION"))
 model = GenerativeModel("gemini-2.0-flash")
-storage_client = storage.Client(project=settings.google_project_id)
+
+def get_storage_client():
+    return storage.Client()
 
 router = APIRouter(prefix="/ai", tags=["Curriculum AI"])
 
@@ -117,6 +119,7 @@ async def save_approved_questions(
 @router.post("/upload/{course_id}")
 async def upload_syllabus(course_id: UUID, file: UploadFile = File(...), db: asyncpg.Connection = Depends(get_db)):
     try:
+        storage_client = get_storage_client()
         bucket = storage_client.bucket(settings.google_bucket_name)
         blob = bucket.blob(f"syllabi/{course_id}/{file.filename}")
         blob.upload_from_file(file.file)
