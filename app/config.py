@@ -1,7 +1,8 @@
 from pydantic_settings import BaseSettings
 from functools import lru_cache
 from typing import List, Optional
-
+from dotenv import load_dotenv
+load_dotenv()
 
 class Settings(BaseSettings):
     # ── Supabase ──────────────────────────────────
@@ -20,6 +21,12 @@ class Settings(BaseSettings):
     debug: bool = True
     secret_key: str = "dev-secret-key"
     allowed_origins: str = "*"
+
+    # ── Email ─────────────────────────────────────
+    smtp_host: str = "smtp.gmail.com"
+    smtp_port: int = 587
+    smtp_user: str = ""
+    smtp_pass: str = ""
 
     @property
     def is_dev(self) -> bool:

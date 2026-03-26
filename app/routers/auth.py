@@ -1,5 +1,11 @@
 from fastapi import APIRouter, Depends, HTTPException, status, Request
 import asyncpg
+import random
+import time
+from app.services.email import send_otp_email  # we'll create this
+
+# Temporary in-memory OTP store: { email: { otp, expires_at } }
+otp_store: dict = {}
 
 from app.database import get_db
 from app.schemas.auth import RegisterRequest, LoginRequest, AuthResponse, RefreshRequest, ChangePasswordRequest
@@ -26,7 +32,7 @@ async def register(
             "email_confirm": True,
         })
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Supabase error: {str(e)}")
+        raise HTTPException(status_code=400, detail=f"error: {str(e)}")
 
     user = res.user
     if not user:
@@ -51,8 +57,10 @@ async def register(
                 body.section,
             )
     except Exception as e:
-        supabase.auth.admin.delete_user(user.id)
-        raise HTTPException(status_code=500, detail=f"Profile creation failed: {str(e)}")
+            supabase.auth.admin.delete_user(user.id)
+            if "unique_usn" in str(e):
+                raise HTTPException(status_code=400, detail="USN already exists")
+            raise HTTPException(status_code=500, detail=f"Profile creation failed: {str(e)}")
 
     # 3. Sign in to get tokens
     sign_in = supabase.auth.sign_in_with_password({
@@ -176,3 +184,43 @@ async def logout(
 @router.get("/me")
 async def me(current_user: dict = Depends(get_current_user)):
     return current_user
+
+
+@router.post("/send-otp", status_code=200)
+async def send_otp(body: dict):
+    email = body.get("email")
+    if not email:
+        raise HTTPException(status_code=400, detail="Email is required")
+
+    otp = str(random.randint(100000, 999999))
+    otp_store[email] = {
+        "otp": otp,
+        "expires_at": time.time() + 300
+    }
+
+    try:
+        await send_otp_email(email, otp)
+    except Exception as e:
+        print("Email send failed:", str(e))
+        raise HTTPException(status_code=500, detail=f"Failed to send OTP: {str(e)}")
+
+    return {"message": "OTP sent successfully"}
+
+
+@router.post("/verify-otp", status_code=200)
+async def verify_otp(body: dict):
+    email = body.get("email")
+    otp = body.get("otp")
+
+    record = otp_store.get(email)
+
+    if not record:
+        raise HTTPException(status_code=400, detail="OTP not found. Request a new one.")
+    if time.time() > record["expires_at"]:
+        otp_store.pop(email, None)
+        raise HTTPException(status_code=400, detail="OTP expired. Request a new one.")
+    if record["otp"] != otp:
+        raise HTTPException(status_code=400, detail="Invalid OTP")
+
+    otp_store.pop(email, None)  # clear after successful verify
+    return {"message": "OTP verified"}

@@ -77,3 +77,4 @@ class ChangePasswordRequest(BaseModel):
         if not re.search(r"[!@#$%^&*(),.?\":{}|<>]", v):
             raise ValueError("Password must contain at least one special character")
         return v
+    
