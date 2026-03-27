@@ -8,7 +8,7 @@ from app.services.email import send_otp_email  # we'll create this
 otp_store: dict = {}
 
 from app.database import get_db
-from app.schemas.auth import RegisterRequest, LoginRequest, AuthResponse, RefreshRequest, ChangePasswordRequest
+from app.schemas.auth import RegisterRequest, LoginRequest, AuthResponse, RefreshRequest, ChangePasswordRequest, ResetPasswordRequest
 from app.services.supabase_client import get_supabase
 from app.dependencies import get_current_user
 from app.services.activity import log_activity
@@ -224,3 +224,22 @@ async def verify_otp(body: dict):
 
     otp_store.pop(email, None)  # clear after successful verify
     return {"message": "OTP verified"}
+
+
+@router.post("/reset-password", status_code=200)
+async def reset_password(body: ResetPasswordRequest):
+    supabase = get_supabase()
+    try:
+        users = supabase.auth.admin.list_users()
+        target = next((u for u in users if u.email == body.email), None)
+        if not target:
+            raise HTTPException(status_code=404, detail="No account found with this email")
+        supabase.auth.admin.update_user_by_id(
+            str(target.id),
+            {"password": body.new_password}
+        )
+        return {"message": "Password reset successful"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Reset failed: {str(e)}")
