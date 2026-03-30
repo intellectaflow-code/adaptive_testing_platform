@@ -1,5 +1,5 @@
 from pydantic import BaseModel, Field
-from typing import Optional
+from typing import List, Optional
 from datetime import datetime
 from uuid import UUID
 
@@ -37,3 +37,7 @@ class AssignTeacherIn(BaseModel):
 class EnrollStudentIn(BaseModel):
     student_id: UUID
 
+
+class BulkEnrollRequest(BaseModel):
+    course_id: str
+    usns: List[str]

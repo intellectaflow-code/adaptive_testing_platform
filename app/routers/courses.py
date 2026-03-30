@@ -6,7 +6,7 @@ from google.cloud import storage
 from app.database import get_db
 from app.dependencies import get_current_user, require_teacher_up, require_admin_or_hod, require_admin
 from app.schemas.courses import (
-    CourseCreate, CourseUpdate, CourseOut,
+    BulkEnrollRequest, CourseCreate, CourseUpdate, CourseOut,
     AssignTeacherIn, EnrollStudentIn,
 )
 from app.config import get_settings
@@ -325,3 +325,70 @@ async def list_enrolled_students(
     )
     return [dict(r) for r in rows]
 
+
+@router.post("/bulk-enroll-usn")
+async def bulk_enroll_usn(
+    body: BulkEnrollRequest,
+    current_user: dict = Depends(require_admin_or_hod),
+    db: asyncpg.Connection = Depends(get_db),
+):
+    course_id = body.course_id
+    usns = body.usns
+    if not usns:
+        raise HTTPException(400, "No USNs provided")
+
+    # 🔍 Get course
+    course = await db.fetchrow(
+        "SELECT branch FROM courses WHERE id = $1",
+        course_id
+    )
+    if not course:
+        raise HTTPException(404, "Course not found")
+
+    # 🔐 HOD restriction
+    if current_user["role"] == "hod":
+        if course["branch"] != current_user["branch"]:
+            raise HTTPException(403, "Only your branch allowed")
+
+    # 🔍 Get students by USN
+    students = await db.fetch(
+        """
+        SELECT id, usn, branch
+        FROM profiles
+        WHERE usn = ANY($1::text[])
+        """,
+        usns
+    )
+
+    enrolled = 0
+    skipped = []
+    not_found = list(usns)
+
+    async with db.transaction():
+        for s in students:
+            # remove from not_found
+            if s["usn"] in not_found:
+                not_found.remove(s["usn"])
+
+            # HOD branch check
+            if current_user["role"] == "hod":
+                if s["branch"] != current_user["branch"]:
+                    skipped.append(s["usn"])
+                    continue
+
+            await db.execute(
+                """
+                INSERT INTO enrollments (course_id, student_id)
+                VALUES ($1, $2)
+                ON CONFLICT DO NOTHING
+                """,
+                course_id,
+                s["id"]
+            )
+            enrolled += 1
+
+    return {
+        "enrolled": enrolled,
+        "skipped": skipped,
+        "not_found": not_found
+    }
