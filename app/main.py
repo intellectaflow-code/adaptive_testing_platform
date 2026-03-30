@@ -10,7 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.config import get_settings
 from app.database import create_pool, close_pool
 from app.routers import (
-    profiles, courses, questions, quizzes,
+    departments, profiles, courses, questions, quizzes,
     attempts, analytics, announcements, messages, admin, auth, teachers_dashboard, syllabus_to_quiz, settings
 )
 from app.routers import ai_quiz
@@ -112,6 +112,7 @@ app.include_router(teachers_dashboard.router,   prefix=PREFIX)
 app.include_router(syllabus_to_quiz.router,     prefix=PREFIX)
 app.include_router(settings.router,             prefix=PREFIX)
 app.include_router(ai_quiz.router,              prefix=PREFIX)
+app.include_router(departments.router,          prefix=PREFIX)
 
 
 # ── Health / root ─────────────────────────────────────────────────────────────

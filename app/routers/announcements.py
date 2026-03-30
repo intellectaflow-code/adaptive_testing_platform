@@ -17,18 +17,18 @@ async def create_announcement(
 ):
     row = await db.fetchrow(
         """
-        SELECT 
-            a.*,
-            p.full_name AS teacher_name,
-            c.name AS course_name
-        FROM public.announcements a
-        LEFT JOIN public.profiles p ON a.created_by = p.id
-        LEFT JOIN public.courses c ON a.course_id = c.id
-        WHERE a.id = (
+        WITH inserted AS (
             INSERT INTO public.announcements (course_id, created_by, title, message)
             VALUES ($1, $2, $3, $4)
-            RETURNING id
+            RETURNING *
         )
+        SELECT 
+            i.*,
+            p.full_name AS teacher_name,
+            c.name AS course_name
+        FROM inserted i
+        LEFT JOIN public.profiles p ON i.created_by = p.id
+        LEFT JOIN public.courses c ON i.course_id = c.id
         """,
         str(body.course_id) if body.course_id else None,
         str(current_user["id"]),

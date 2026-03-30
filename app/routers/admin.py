@@ -1,9 +1,10 @@
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from typing import List, Optional
 import asyncpg
 
 from app.database import get_db
 from app.dependencies import require_admin, require_admin_or_hod
+from app.services.supabase_client import get_supabase
 
 router = APIRouter(prefix="/admin", tags=["Admin"])
 
@@ -110,28 +111,56 @@ async def cheating_report(
     )
     return [dict(r) for r in rows]
 
-
 @router.post("/bulk-enroll")
 async def bulk_enroll(
     course_id: str,
     student_ids: List[str],
-    _: dict = Depends(require_admin_or_hod),
+    current_user: dict = Depends(require_admin_or_hod),
     db: asyncpg.Connection = Depends(get_db),
 ):
-    """Enroll multiple students at once."""
     enrolled = 0
     skipped = 0
+
     async with db.transaction():
+
+        # 🔥 Get course branch
+        course = await db.fetchrow(
+            "SELECT branch FROM public.courses WHERE id = $1",
+            course_id
+        )
+        if not course:
+            raise HTTPException(404, "Course not found")
+
+        # 🔥 If HOD → restrict by branch
+        if current_user["role"] == "hod":
+            if course["branch"] != current_user["branch"]:
+                raise HTTPException(403, "You can only manage your branch")
+
         for sid in student_ids:
             try:
+                # 🔥 Check student branch (only for HOD)
+                if current_user["role"] == "hod":
+                    student = await db.fetchrow(
+                        "SELECT branch FROM public.profiles WHERE id = $1",
+                        sid
+                    )
+                    if not student or student["branch"] != current_user["branch"]:
+                        skipped += 1
+                        continue
+
                 await db.execute(
-                    "INSERT INTO public.enrollments (course_id, student_id) VALUES ($1, $2)",
-                    course_id, sid,
+                    """
+                    INSERT INTO public.enrollments (course_id, student_id)
+                    VALUES ($1, $2)
+                    ON CONFLICT DO NOTHING
+                    """,
+                    course_id, sid
                 )
                 enrolled += 1
             except Exception:
                 skipped += 1
-    return {"enrolled": enrolled, "skipped_duplicates": skipped}
+
+    return {"enrolled": enrolled, "skipped": skipped}
 
 
 @router.get("/students/{student_id}/full-report")
@@ -190,3 +219,85 @@ async def student_full_report(
         "recent_attempts": [dict(r) for r in attempts],
     }
 
+@router.post("/bulk-create-students")
+async def bulk_create_students(
+    students: List[dict],
+    db: asyncpg.Connection = Depends(get_db),
+):
+    async with db.transaction():
+        for s in students:
+            await db.execute(
+                """
+                INSERT INTO profiles (id, email, full_name, role, branch, usn, section)
+                VALUES (gen_random_uuid(), $1, $2, 'student', $3, $4, $5)
+                ON CONFLICT DO NOTHING
+                """,
+                s["email"], s["full_name"], s["branch"], s["usn"], s["section"]
+            )
+    return {"message": "Students uploaded"}
+
+@router.post("/assign-teacher")
+async def assign_teacher(
+    course_id: str,
+    teacher_id: str,
+    current_user: dict = Depends(require_admin_or_hod),
+    db: asyncpg.Connection = Depends(get_db),
+):
+    # Get course + teacher
+    course = await db.fetchrow("SELECT branch FROM courses WHERE id = $1", course_id)
+    teacher = await db.fetchrow("SELECT branch FROM profiles WHERE id = $1", teacher_id)
+
+    if not course or not teacher:
+        raise HTTPException(404, "Course or teacher not found")
+
+    # 🔥 HOD restriction
+    if current_user["role"] == "hod":
+        if course["branch"] != current_user["branch"] or teacher["branch"] != current_user["branch"]:
+            raise HTTPException(403, "Only your branch allowed")
+
+    await db.execute(
+        """
+        INSERT INTO course_teachers (course_id, teacher_id)
+        VALUES ($1, $2)
+        ON CONFLICT DO NOTHING
+        """,
+        course_id, teacher_id
+    )
+
+    return {"message": "Teacher assigned"}
+
+@router.post("/create-teacher")
+async def create_teacher(
+    body: dict,
+    current_user: dict = Depends(require_admin_or_hod),
+    db: asyncpg.Connection = Depends(get_db),
+):
+    # 🔥 HOD can only create in their branch
+    branch = body.get("branch")
+
+    if current_user["role"] == "hod":
+        branch = current_user["branch"]
+
+    # create auth user (if using supabase)
+    supabase = get_supabase()
+
+    res = supabase.auth.admin.create_user({
+        "email": body["email"],
+        "password": body["password"],
+        "email_confirm": True,
+    })
+
+    user = res.user
+
+    await db.execute(
+        """
+        INSERT INTO public.profiles (id, email, full_name, role, branch)
+        VALUES ($1, $2, $3, 'teacher', $4)
+        """,
+        user.id,
+        body["email"],
+        body.get("full_name"),
+        branch,
+    )
+
+    return {"message": "Teacher created"}

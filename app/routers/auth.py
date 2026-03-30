@@ -1,3 +1,6 @@
+import re
+from typing import Dict, List
+
 from fastapi import APIRouter, Depends, HTTPException, status, Request
 import asyncpg
 import random
@@ -15,6 +18,8 @@ from app.services.activity import log_activity
 
 router = APIRouter(prefix="/auth", tags=["Auth"])
 
+
+EMAIL_REGEX = re.compile(r"^[\w\.-]+@mite\.ac\.in$")
 
 @router.post("/register", response_model=AuthResponse, status_code=201)
 async def register(
@@ -243,3 +248,99 @@ async def reset_password(body: ResetPasswordRequest):
         raise
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Reset failed: {str(e)}")
+    
+    
+@router.post("/bulk-register-students")
+async def bulk_register_students(
+    students: List[Dict],
+    request: Request,
+    current_user: dict = Depends(get_current_user),
+    db: asyncpg.Connection = Depends(get_db),
+):
+    """
+    Bulk create students from Excel (JSON input)
+    Uses same logic as register()
+    """
+
+    # 🔐 Only admin or HOD
+    if current_user["role"] not in ["admin", "hod"]:
+        raise HTTPException(403, "Not authorized")
+
+    supabase = get_supabase()
+
+    created = 0
+    errors = []
+
+    for i, s in enumerate(students):
+        try:
+            # -----------------------
+            # 🔍 Validation
+            # -----------------------
+            email = s.get("email")
+            if not email or not EMAIL_REGEX.match(email):
+                raise Exception("Invalid email")
+
+            # 🔐 HOD restriction
+            branch = s.get("branch")
+            if current_user["role"] == "hod":
+                if branch != current_user["branch"]:
+                    raise Exception("Cannot add student from another branch")
+
+            password = s.get("password") or "Student@123"  # default password
+
+            # -----------------------
+            # 1. Create Auth User
+            # -----------------------
+            res = supabase.auth.admin.create_user({
+                "email": email,
+                "password": password,
+                "email_confirm": True,
+            })
+
+            user = res.user
+            if not user:
+                raise Exception("Auth creation failed")
+
+            # -----------------------
+            # 2. Insert Profile
+            # -----------------------
+            await db.execute(
+                """
+                INSERT INTO public.profiles
+                (id, email, full_name, role, branch, usn, sem, section, created_at, updated_at)
+                VALUES ($1, $2, $3, 'student', $4, $5, $6, $7, now(), now())
+                ON CONFLICT (id) DO NOTHING
+                """,
+                user.id,
+                email,
+                s.get("full_name"),
+                branch,
+                s.get("usn"),
+                s.get("semester"),
+                s.get("section"),
+            )
+
+            # -----------------------
+            # 3. Log Activity
+            # -----------------------
+            await log_activity(
+                db,
+                str(user.id),
+                "bulk_register_student",
+                request.client.host if request.client else None
+            )
+
+            created += 1
+
+        except Exception as e:
+            errors.append({
+                "row": i + 1,
+                "email": s.get("email"),
+                "error": str(e)
+            })
+
+    return {
+        "created": created,
+        "failed": len(errors),
+        "errors": errors
+    }

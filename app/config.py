@@ -1,3 +1,4 @@
+# from pydantic import ConfigDict
 from pydantic_settings import BaseSettings
 from functools import lru_cache
 from typing import List, Optional
@@ -5,6 +6,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 class Settings(BaseSettings):
+    # model_config = ConfigDict(extra="allow")
     # ── Supabase ──────────────────────────────────
     supabase_url: str = "https://ewnmflcmgzazuylkyhjf.supabase.co"
     supabase_jwt_secret: str = ""
@@ -42,6 +44,7 @@ class Settings(BaseSettings):
         env_file = ".env"
         case_sensitive = False
         env_file_encoding = "utf-8"
+        extra = "allow"
 
 
 @lru_cache
