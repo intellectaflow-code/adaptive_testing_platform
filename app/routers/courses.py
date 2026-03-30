@@ -392,3 +392,11 @@ async def bulk_enroll_usn(
         "skipped": skipped,
         "not_found": not_found
     }
+@router.get("/departments")
+async def list_departments(
+    db: asyncpg.Connection = Depends(get_db),
+):
+    rows = await db.fetch(
+        "SELECT id, name, code FROM public.departments ORDER BY name"
+    )
+    return [dict(r) for r in rows]

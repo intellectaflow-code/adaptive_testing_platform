@@ -42,3 +42,7 @@ class ProfileOut(BaseModel):
     class Config:
         from_attributes = True
 
+class DepartmentOut(BaseModel):
+    id: UUID
+    name: str
+    code: Optional[str] = None

@@ -4,11 +4,18 @@ import asyncpg
 
 from app.database import get_db
 from app.dependencies import get_current_user, require_admin, require_admin_or_hod
-from app.schemas.profiles import ProfileCreate, ProfileUpdate, ProfileOut, ProfileAdminUpdate
+from app.schemas.profiles import ProfileCreate, ProfileUpdate, ProfileOut, ProfileAdminUpdate, DepartmentOut
 from app.services.activity import log_activity
 
 router = APIRouter(prefix="/profiles", tags=["Profiles"])
-
+@router.get("/departments", response_model=List[DepartmentOut])
+async def list_departments(
+    db: asyncpg.Connection = Depends(get_db),
+):
+    rows = await db.fetch(
+        "SELECT id, name, code FROM public.departments ORDER BY name"
+    )
+    return [dict(r) for r in rows]
 
 @router.get("/me", response_model=ProfileOut)
 async def get_my_profile(current_user: dict = Depends(get_current_user)):
@@ -59,7 +66,6 @@ async def update_my_profile(
             status_code=400, 
             detail="The USN provided is already registered to another user."
         )
-
 
 # ---- Admin endpoints ----
 
