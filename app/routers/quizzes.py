@@ -18,7 +18,13 @@ router = APIRouter(prefix="/quizzes", tags=["Quizzes"])
 
 async def _get_quiz_or_404(db, quiz_id: str):
     row = await db.fetchrow(
-        "SELECT * FROM public.quizzes WHERE id = $1 AND is_deleted = false", quiz_id
+        """
+        SELECT q.*, p.full_name AS teacher_name
+        FROM public.quizzes q
+        LEFT JOIN public.profiles p ON p.id = q.created_by
+        WHERE q.id = $1 AND q.is_deleted = false
+        """,
+        quiz_id
     )
     if not row:
         raise HTTPException(status_code=404, detail="Quiz not found")
@@ -121,9 +127,11 @@ async def list_quizzes(
         SELECT 
             q.*,
             c.name AS course_name,
-            c.code AS course_code   -- 👈 ADD THIS
+            c.code AS course_code,
+            p.full_name AS teacher_name    
         FROM public.quizzes q
         JOIN public.courses c ON q.course_id = c.id
+        LEFT JOIN public.profiles p ON p.id = q.created_by  
         WHERE {where}
         ORDER BY q.created_at DESC
         LIMIT ${idx} OFFSET ${idx+1}

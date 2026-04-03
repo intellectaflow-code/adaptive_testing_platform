@@ -59,6 +59,7 @@ class QuizOut(BaseModel):
     total_marks: Optional[float] = None
     passing_marks: Optional[float] = None
     duration_minutes: Optional[int] = None
+    teacher_name: Optional[str] = None 
     start_time: Optional[datetime] = None
     end_time: Optional[datetime] = None
     randomize_questions: bool

@@ -19,6 +19,7 @@ class ProfileUpdate(BaseModel):
     section: Optional[str] = None
     usn: Optional[str] = None
     sem: Optional[int] = None
+    profile_photo: Optional[str] = None
 
 
 class ProfileAdminUpdate(ProfileUpdate):
@@ -36,6 +37,7 @@ class ProfileOut(BaseModel):
     usn: Optional[str] = None
     sem: Optional[int] = None
     is_active: bool
+    profile_photo: Optional[str] = None 
     created_at: datetime
     updated_at: datetime
 

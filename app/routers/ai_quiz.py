@@ -45,7 +45,7 @@ async def start_ai_quiz(
             VALUES ($1, $2, $3, $4)
             RETURNING id
             """,
-            str(current_user["id"]),
+            current_user["id"],
             body.topic,
             body.difficulty,
             body.total_questions,

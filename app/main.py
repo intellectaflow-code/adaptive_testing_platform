@@ -11,9 +11,9 @@ from app.config import get_settings
 from app.database import create_pool, close_pool
 from app.routers import (
     departments, profiles, courses, questions, quizzes,
-    attempts, analytics, announcements, messages, admin, auth, teachers_dashboard, syllabus_to_quiz, settings
+    attempts, analytics, announcements, messages, admin, auth, teachers_dashboard, syllabus_to_quiz, settings,ai_quiz
 )
-from app.routers import ai_quiz
+
 
 
 # ── Logging ───────────────────────────────────────────────────────────────────
@@ -59,10 +59,21 @@ app = FastAPI(
 )
 
 # ── CORS – open in dev ────────────────────────────────────────────────────────
+# app.add_middleware(
+#     CORSMiddleware,
+#     # allow_origins=["http://localhost:3000", "https://adaptivetestingplatfromteachers-759082157852.asia-south1.run.app","https://adaptivetestingplatfromstudents-759082157852.asia-south1.run.app"],
+#     allow_credentials=True,
+#     allow_methods=["*"],
+#     allow_headers=["*"],
+# )
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:3000", "https://adaptivetestingplatfromteachers-759082157852.asia-south1.run.app","https://adaptivetestingplatfromstudents-759082157852.asia-south1.run.app"],
     # allow_origins=["*"],
+    allow_origins=[
+        "http://localhost:3000",
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -98,7 +109,6 @@ async def log_requests(request: Request, call_next):
 
 # ── Routers ───────────────────────────────────────────────────────────────────
 PREFIX = "/api/v1"
-
 app.include_router(auth.router,                 prefix=PREFIX)
 app.include_router(profiles.router,             prefix=PREFIX)
 app.include_router(courses.router,              prefix=PREFIX)

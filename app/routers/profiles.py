@@ -1,6 +1,9 @@
 from fastapi import APIRouter, Depends, HTTPException, status, Request
 from typing import List, Optional
 import asyncpg
+import uuid
+from fastapi import File, UploadFile
+from app.services.supabase_client import get_supabase
 
 from app.database import get_db
 from app.dependencies import get_current_user, require_admin, require_admin_or_hod
@@ -67,6 +70,46 @@ async def update_my_profile(
             detail="The USN provided is already registered to another user."
         )
 
+@router.put("/me/photo", response_model=ProfileOut)
+async def update_profile_photo(
+    photo: UploadFile = File(...),
+    current_user: dict = Depends(get_current_user),
+    db: asyncpg.Connection = Depends(get_db),
+):
+    allowed = {"image/jpeg", "image/png", "image/webp"}
+    if photo.content_type not in allowed:
+        raise HTTPException(400, "Invalid file type. Use JPG, PNG or WebP.")
+
+    contents = await photo.read()
+    if len(contents) > 5 * 1024 * 1024:
+        raise HTTPException(400, "File too large. Max 5MB.")
+
+    ext = photo.filename.rsplit(".", 1)[-1]
+    path = f"{current_user['id']}.{ext}"
+
+    supabase = get_supabase()  # ← must be calling Supabase, not writing to disk
+    supabase.storage.from_("avatars").upload(
+        path=path,
+        file=contents,
+        file_options={"content-type": photo.content_type, "upsert": "true"}
+    )
+
+    photo_url = supabase.storage.from_("avatars").get_public_url(path)
+    # ↑ this gives a full https://xxx.supabase.co/... URL, not /static/...
+
+    row = await db.fetchrow(
+        """
+        UPDATE public.profiles
+        SET profile_photo = $2, updated_at = now()
+        WHERE id = $1 AND is_deleted = false
+        RETURNING *
+        """,
+        current_user["id"], photo_url,
+    )
+    if not row:
+        raise HTTPException(404, "Profile not found")
+
+    return dict(row)
 # ---- Admin endpoints ----
 @router.get("", response_model=List[ProfileOut])
 async def list_profiles(
