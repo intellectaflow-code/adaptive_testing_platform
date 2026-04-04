@@ -104,8 +104,11 @@ async def list_quizzes(
         )
         params.append(str(current_user["id"])); idx += 1
 
-    elif current_user["role"] == "teacher":
-        where_parts.append(f"q.created_by = ${idx}"); params.append(str(current_user["id"])); idx += 1
+    elif current_user["role"] in ("teacher", "hod"):
+        where_parts.append(f"q.created_by = ${idx}")
+        params.append(str(current_user["id"]))
+        idx += 1
+
         if published_only:
             where_parts.append("q.is_published = true")
     else:

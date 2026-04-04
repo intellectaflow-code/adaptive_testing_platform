@@ -68,36 +68,49 @@ async def update_my_profile(
         )
 
 # ---- Admin endpoints ----
-
 @router.get("", response_model=List[ProfileOut])
 async def list_profiles(
     role: Optional[str] = None,
     branch: Optional[str] = None,
     skip: int = 0,
     limit: int = 50,
-    _: dict = Depends(require_admin_or_hod),
+    current_user: dict = Depends(require_admin_or_hod),
     db: asyncpg.Connection = Depends(get_db),
 ):
     where_parts = ["is_deleted = false"]
     params = []
     idx = 1
 
+    # 🔒 HOD restriction
+    if current_user["role"] == "hod":
+        where_parts.append(f"branch = ${idx}")
+        params.append(current_user["branch"])
+        idx += 1
+
+    # Filters
     if role:
         where_parts.append(f"role = ${idx}")
         params.append(role)
         idx += 1
+
     if branch:
         where_parts.append(f"branch = ${idx}")
         params.append(branch)
         idx += 1
 
     where = " AND ".join(where_parts)
+
     rows = await db.fetch(
-        f"SELECT * FROM public.profiles WHERE {where} ORDER BY full_name LIMIT ${idx} OFFSET ${idx+1}",
+        f"""
+        SELECT * FROM public.profiles
+        WHERE {where}
+        ORDER BY full_name
+        LIMIT ${idx} OFFSET ${idx+1}
+        """,
         *params, limit, skip,
     )
-    return [dict(r) for r in rows]
 
+    return [dict(r) for r in rows]
 
 @router.get("/{user_id}", response_model=ProfileOut)
 async def get_profile(

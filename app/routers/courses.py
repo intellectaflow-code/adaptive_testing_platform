@@ -100,7 +100,6 @@ async def create_course(
         return dict(row)
 
 
-    
 @router.get("", response_model=List[CourseOut])
 async def list_courses(
     branch: Optional[str] = None,
@@ -110,7 +109,10 @@ async def list_courses(
     current_user: dict = Depends(get_current_user),
     db: asyncpg.Connection = Depends(get_db),
 ):
-    # Students only see their enrolled courses
+
+    # -----------------------------
+    # 🎓 STUDENT
+    # -----------------------------
     if current_user["role"] == "student":
         rows = await db.fetch(
             """
@@ -128,46 +130,96 @@ async def list_courses(
                 AND p.role = 'teacher'
             WHERE c.is_deleted = false
             GROUP BY c.id
-            ORDER BY c.name 
-            LIMIT $2 OFFSET $3
-            """,
-            str(current_user["id"]), limit, skip,
-        )
-        return [dict(r) for r in rows]
-
-    # Teachers see their assigned courses
-    # Teachers see their assigned courses
-    if current_user["role"] == "teacher":
-        rows = await db.fetch(
-            """
-            SELECT c.* FROM public.courses c
-            JOIN public.course_teachers ct ON ct.course_id = c.id
-            WHERE ct.teacher_id = $1 AND c.is_deleted = false
             ORDER BY c.name
             LIMIT $2 OFFSET $3
             """,
-            str(current_user["id"]),  # $1
-            limit,                    # $2
-            skip                      # $3
+            str(current_user["id"]),
+            limit,
+            skip,
         )
         return [dict(r) for r in rows]
 
-    # Admin / HOD see all
-    where_parts = ["is_deleted = false"]
+
+    # -----------------------------
+    # 👨‍🏫 TEACHER
+    # -----------------------------
+    if current_user["role"] == "teacher":
+        rows = await db.fetch(
+            """
+            SELECT 
+                c.*,
+                STRING_AGG(p.full_name, ', ' ORDER BY p.full_name) AS teacher_name
+            FROM public.courses c
+            JOIN public.course_teachers ct ON ct.course_id = c.id
+            LEFT JOIN public.profiles p ON p.id = ct.teacher_id
+            WHERE ct.teacher_id = $1 
+              AND c.is_deleted = false
+            GROUP BY c.id
+            ORDER BY c.name
+            LIMIT $2 OFFSET $3
+            """,
+            str(current_user["id"]),
+            limit,
+            skip
+        )
+        return [dict(r) for r in rows]
+
+
+    # -----------------------------
+    # 🧑‍💼 ADMIN / HOD
+    # -----------------------------
+    where_parts = ["c.is_deleted = false"]
     params: list = []
     idx = 1
+
+    # 🔒 HOD restriction (IMPORTANT)
+    if current_user["role"] == "hod":
+        where_parts.append(f"c.branch = ${idx}")
+        params.append(current_user["branch"])
+        idx += 1
+
+    # Optional filters
     if branch:
-        where_parts.append(f"branch = ${idx}"); params.append(branch); idx += 1
+        where_parts.append(f"c.branch = ${idx}")
+        params.append(branch)
+        idx += 1
+
     if semester:
-        where_parts.append(f"semester = ${idx}"); params.append(semester); idx += 1
+        where_parts.append(f"c.semester = ${idx}")
+        params.append(semester)
+        idx += 1
 
     where = " AND ".join(where_parts)
-    rows = await db.fetch(
-        f"SELECT * FROM public.courses WHERE {where} ORDER BY name LIMIT ${idx} OFFSET ${idx+1}",
-        *params, limit, skip,
-    )
-    return [dict(r) for r in rows]
 
+    rows = await db.fetch(
+        f"""
+        SELECT 
+            c.*,
+            STRING_AGG(p.full_name, ', ' ORDER BY p.full_name) AS teacher_name,
+            MIN(
+                CASE 
+                    WHEN ct.teacher_id = ${idx} THEN 0 
+                    ELSE 1 
+                END
+            ) AS priority
+        FROM public.courses c
+        LEFT JOIN public.course_teachers ct ON ct.course_id = c.id
+        LEFT JOIN public.profiles p ON p.id = ct.teacher_id
+        WHERE {where}
+        GROUP BY c.id
+        ORDER BY 
+            priority ASC,                    -- 🔥 My courses first
+            teacher_name ASC NULLS LAST,     -- 🔥 Then by teacher
+            c.name ASC                      -- fallback
+        LIMIT ${idx+1} OFFSET ${idx+2}
+        """,
+        *params,
+        str(current_user["id"]),  # 👈 used in priority
+        limit,
+        skip,
+    )
+
+    return [dict(r) for r in rows]
 
 @router.get("/{course_id}", response_model=CourseOut)
 async def get_course(
