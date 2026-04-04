@@ -3,7 +3,7 @@ from typing import List, Optional
 import asyncpg
 
 from app.database import get_db
-from app.dependencies import require_admin, require_admin_or_hod
+from app.dependencies import get_current_user, require_admin, require_admin_or_hod
 from app.services.supabase_client import get_supabase
 
 router = APIRouter(prefix="/admin", tags=["Admin"])
@@ -111,11 +111,12 @@ async def cheating_report(
     )
     return [dict(r) for r in rows]
 
+
 @router.post("/bulk-enroll")
 async def bulk_enroll(
     course_id: str,
     student_ids: List[str],
-    current_user: dict = Depends(require_admin_or_hod),
+    current_user: dict = Depends(get_current_user),
     db: asyncpg.Connection = Depends(get_db),
 ):
     enrolled = 0
@@ -123,7 +124,7 @@ async def bulk_enroll(
 
     async with db.transaction():
 
-        # 🔥 Get course branch
+        # 🔥 Get course
         course = await db.fetchrow(
             "SELECT branch FROM public.courses WHERE id = $1",
             course_id
@@ -131,14 +132,34 @@ async def bulk_enroll(
         if not course:
             raise HTTPException(404, "Course not found")
 
-        # 🔥 If HOD → restrict by branch
+        # -----------------------------
+        # 🔒 HOD restriction
+        # -----------------------------
         if current_user["role"] == "hod":
             if course["branch"] != current_user["branch"]:
                 raise HTTPException(403, "You can only manage your branch")
 
+        # -----------------------------
+        # 🔒 TEACHER restriction
+        # -----------------------------
+        if current_user["role"] == "teacher":
+            assigned = await db.fetchval(
+                """
+                SELECT 1 FROM public.course_teachers
+                WHERE course_id = $1 AND teacher_id = $2
+                """,
+                course_id,
+                str(current_user["id"])
+            )
+            if not assigned:
+                raise HTTPException(403, "You are not assigned to this course")
+
+        # -----------------------------
+        # 🚀 Enrollment loop
+        # -----------------------------
         for sid in student_ids:
             try:
-                # 🔥 Check student branch (only for HOD)
+                # 🔒 HOD → enforce student branch
                 if current_user["role"] == "hod":
                     student = await db.fetchrow(
                         "SELECT branch FROM public.profiles WHERE id = $1",
@@ -154,14 +175,19 @@ async def bulk_enroll(
                     VALUES ($1, $2)
                     ON CONFLICT DO NOTHING
                     """,
-                    course_id, sid
+                    course_id,
+                    sid
                 )
+
                 enrolled += 1
+
             except Exception:
                 skipped += 1
 
-    return {"enrolled": enrolled, "skipped": skipped}
-
+    return {
+        "enrolled": enrolled,
+        "skipped": skipped
+    }
 
 @router.get("/students/{student_id}/full-report")
 async def student_full_report(

@@ -381,7 +381,7 @@ async def list_enrolled_students(
 @router.post("/bulk-enroll-usn")
 async def bulk_enroll_usn(
     body: BulkEnrollRequest,
-    current_user: dict = Depends(require_admin_or_hod),
+    current_user: dict = Depends(get_current_user),
     db: asyncpg.Connection = Depends(get_db),
 ):
     course_id = body.course_id
@@ -401,6 +401,19 @@ async def bulk_enroll_usn(
     if current_user["role"] == "hod":
         if course["branch"] != current_user["branch"]:
             raise HTTPException(403, "Only your branch allowed")
+    
+    # 🔒 TEACHER restriction
+    if current_user["role"] == "teacher":
+        assigned = await db.fetchval(
+            """
+            SELECT 1 FROM public.course_teachers
+            WHERE course_id = $1 AND teacher_id = $2
+            """,
+            course_id,
+            str(current_user["id"])
+        )
+        if not assigned:
+            raise HTTPException(403, "You are not assigned to this course")
 
     # 🔍 Get students by USN
     students = await db.fetch(
