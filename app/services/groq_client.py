@@ -12,8 +12,6 @@ load_dotenv()
 
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
-print("GROQ_API_KEY VALUE:", os.getenv("GROQ_API_KEY"))
-
 
 client = AsyncOpenAI(
     api_key=GROQ_API_KEY,
