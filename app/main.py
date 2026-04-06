@@ -59,14 +59,6 @@ app = FastAPI(
 )
 
 # ── CORS – open in dev ────────────────────────────────────────────────────────
-# app.add_middleware(
-#     CORSMiddleware,
-#     # allow_origins=["http://localhost:3000", "https://adaptivetestingplatfromteachers-759082157852.asia-south1.run.app","https://adaptivetestingplatfromstudents-759082157852.asia-south1.run.app"],
-#     allow_credentials=True,
-#     allow_methods=["*"],
-#     allow_headers=["*"],
-# )
-
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:3000", "https://adaptivetestingplatfromteachers-759082157852.asia-south1.run.app","https://adaptivetestingplatfromstudents-759082157852.asia-south1.run.app"],
@@ -78,6 +70,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
 
 # ── Dev error handler ─────────────────────────────────────────────────────────
 @app.exception_handler(Exception)
