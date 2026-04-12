@@ -282,7 +282,7 @@ async def get_leaderboard(
             "rank": r["rank"],
             "student_id": r["student_id"],
             "name": name,
-            "score": round((r["avg_score"] or 0) * 100, 2),
+            "score": round((r["avg_score"] or 0),2),
             "isMe": r["student_id"] == user_id,
             "initials": initials
         })
