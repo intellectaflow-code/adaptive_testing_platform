@@ -14,7 +14,13 @@ from app.services.grading import (
 )
 from app.services.activity import log_activity
 
+from app.services.descriptive_ai import auto_evaluate_descriptive_answers
+
+
 router = APIRouter(prefix="/attempts", tags=["Quiz Attempts"])
+
+
+
 
 CHEATING_TAB_SWITCH_THRESHOLD = 3
 CHEATING_FULLSCREEN_THRESHOLD = 3
@@ -246,7 +252,6 @@ async def record_proctoring_event(
 
 
 # ---- Submit attempt ----
-
 @router.post("/{attempt_id}/submit", response_model=AttemptOut)
 async def submit_attempt(
     attempt_id: str,
@@ -260,26 +265,58 @@ async def submit_attempt(
     if attempt["status"] != "in_progress":
         raise HTTPException(status_code=409, detail="Attempt already submitted")
 
+    # ----------------------------------------
+    # AI evaluate short + descriptive answers
+    # ----------------------------------------
+    await auto_evaluate_descriptive_answers(db, attempt_id)
+
+    # ----------------------------------------
+    # Recalculate total after AI grading
+    # ----------------------------------------
     total_score = await recalculate_attempt_score(db, attempt_id)
 
+    # ----------------------------------------
+    # Submit attempt
+    # ----------------------------------------
     row = await db.fetchrow(
         """
-        UPDATE public.quiz_attempts SET
-          status = 'submitted', submitted_at = now(),
-          total_score = $2, time_spent_seconds = $3
+        UPDATE public.quiz_attempts
+        SET
+          status = 'submitted',
+          submitted_at = now(),
+          total_score = $2,
+          time_spent_seconds = $3
         WHERE id = $1
         RETURNING *
         """,
-        attempt_id, total_score, time_spent_seconds,
+        attempt_id,
+        total_score,
+        time_spent_seconds,
     )
 
+    # ----------------------------------------
     # Update student performance summary
-    await _update_performance_summary(db, str(current_user["id"]), str(attempt["quiz_id"]))
+    # ----------------------------------------
+    await _update_performance_summary(
+        db,
+        str(current_user["id"]),
+        str(attempt["quiz_id"])
+    )
 
-    await log_activity(db, str(current_user["id"]), "submit_quiz_attempt",
-                       {"attempt_id": attempt_id, "score": str(total_score)})
+    # ----------------------------------------
+    # Activity log
+    # ----------------------------------------
+    await log_activity(
+        db,
+        str(current_user["id"]),
+        "submit_quiz_attempt",
+        {
+            "attempt_id": attempt_id,
+            "score": str(total_score)
+        }
+    )
+
     return dict(row)
-
 
 async def _update_performance_summary(db, student_id: str, quiz_id: str):
     """Upsert student_performance_summary after each attempt submission."""
