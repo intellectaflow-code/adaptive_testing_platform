@@ -67,8 +67,9 @@ async def start_attempt(
         raise HTTPException(status_code=403, detail="Not enrolled in this course")
 
     # Timing check
-    now = datetime.now(timezone.utc)
-    if quiz["start_time"] and quiz["start_time"].replace(tzinfo=timezone.utc) > now:
+    now = datetime.now()
+    print("start=========================",now)    
+    if quiz["start_time"] > now:
         raise HTTPException(status_code=403, detail="Quiz has not started yet")
 
     # Check for special permissions
@@ -81,7 +82,7 @@ async def start_attempt(
     if permission and permission["override_end_time"]:
         end_time = permission["override_end_time"]
 
-    if end_time and end_time.replace(tzinfo=timezone.utc) < now:
+    if end_time < now:
         raise HTTPException(status_code=403, detail="Quiz has ended")
 
     # Attempt count check

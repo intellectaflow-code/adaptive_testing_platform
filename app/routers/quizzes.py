@@ -343,6 +343,38 @@ async def add_question_to_quiz(
         raise HTTPException(status_code=409, detail="Question already in quiz")
     return dict(row)
 
+# Add this new endpoint (place it before or after /{quiz_id}/submit)
+
+@router.get("/{quiz_id}/my-attempts")
+async def get_my_attempts(
+    quiz_id: str,
+    current_user: dict = Depends(get_current_user),
+    db: asyncpg.Connection = Depends(get_db),
+):
+    """Returns how many attempts the student has used and the quiz's max_attempts."""
+    quiz = await _get_quiz_or_404(db, quiz_id)
+    student_id = str(current_user["id"])
+
+    # Check for student-specific permission override
+    perm = await db.fetchrow(
+        "SELECT allowed_attempts FROM public.quiz_permissions WHERE quiz_id = $1 AND student_id = $2",
+        quiz_id, student_id,
+    )
+
+    max_attempts = perm["allowed_attempts"] if perm and perm["allowed_attempts"] else quiz["max_attempts"]
+
+    used_attempts = await db.fetchval(
+        "SELECT COUNT(*) FROM public.quiz_attempts WHERE quiz_id = $1 AND student_id = $2",
+        quiz_id, student_id,
+    )
+
+    return {
+        "used_attempts": used_attempts,
+        "max_attempts": max_attempts,
+        "attempts_remaining": max(0, max_attempts - used_attempts),
+        "can_attempt": used_attempts < max_attempts,
+    }
+
 @router.post("/{quiz_id}/submit", status_code=201)
 async def submit_quiz(
     quiz_id: str,
@@ -353,6 +385,23 @@ async def submit_quiz(
     # 1. Fetch quiz and student info
     quiz = await _get_quiz_or_404(db, quiz_id)
     student_id = str(current_user["id"])
+
+    # --- Enforce max_attempts ---
+    perm = await db.fetchrow(
+        "SELECT allowed_attempts FROM public.quiz_permissions WHERE quiz_id = $1 AND student_id = $2",
+        quiz_id, student_id,
+    )
+    max_attempts = perm["allowed_attempts"] if perm and perm["allowed_attempts"] else quiz["max_attempts"]
+    used_attempts = await db.fetchval(
+        "SELECT COUNT(*) FROM public.quiz_attempts WHERE quiz_id = $1 AND student_id = $2",
+        quiz_id, student_id,
+    )
+    if used_attempts >= max_attempts:
+        raise HTTPException(
+            status_code=403,
+            detail=f"Attempt limit reached. You have used {used_attempts}/{max_attempts} attempts."
+        )
+    # --- End enforcement ---
 
     # 2. Get scoring data (correct options and marks)
     correct_options = await db.fetch("""
