@@ -53,18 +53,20 @@ class TeacherAssignmentBase(BaseSchema):
 
 
 class TeacherAssignmentCreate(TeacherAssignmentBase):
-    teacher_id: uuid.UUID
+    questions: list[TeacherAssignmentQuestionBase]
 
 
-class TeacherAssignmentUpdate(BaseSchema):
-    title: Optional[str] = None
-    description: Optional[str] = None
-    total_marks: Optional[Decimal] = None
-    passing_marks: Optional[Decimal] = None
-    start_time: Optional[datetime] = None
-    due_time: Optional[datetime] = None
-    allow_late_submission: Optional[bool] = None
-    published: Optional[bool] = None
+class TeacherAssignmentUpdate(BaseModel):
+    course_id: uuid.UUID | None = None
+    title: str | None = None
+    description: str | None = None
+    total_marks: float | None = None
+    passing_marks: float | None = None
+    start_time: datetime | None = None
+    due_time: datetime | None = None
+    allow_late_submission: bool | None = None
+    published: bool | None = None
+    questions: list[TeacherAssignmentQuestionBase] | None = None
 
 
 class TeacherAssignmentResponse(TeacherAssignmentBase):
