@@ -11,7 +11,7 @@ from app.config import get_settings
 from app.database import create_pool, close_pool
 from app.routers import (
     departments, profiles, courses, questions, quizzes,
-    attempts, analytics, announcements, messages, admin, auth, teachers_dashboard, syllabus_to_quiz, settings,ai_quiz
+    attempts, analytics, announcements, messages, admin, auth, teachers_dashboard, syllabus_to_quiz, settings,ai_quiz, assignments
 )
 
 
@@ -32,7 +32,7 @@ config = get_settings()  # renamed from 'settings' to 'config' to avoid conflict
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("=" * 60)
-    logger.info("  🎓  Quiz Platform API  —  DEV MODE")
+    logger.info("  Quiz Platform API   ")
     logger.info("  ENV:      %s", config.app_env)
     logger.info("  DEBUG:    %s", config.debug)
     logger.info("  ORIGINS:  %s", config.allowed_origins)
@@ -113,6 +113,7 @@ app.include_router(syllabus_to_quiz.router,     prefix=PREFIX)
 app.include_router(settings.router,             prefix=PREFIX)
 app.include_router(ai_quiz.router,              prefix=PREFIX)
 app.include_router(departments.router,          prefix=PREFIX)
+app.include_router(assignments.router,          prefix=PREFIX)
 
 
 # ── Health / root ─────────────────────────────────────────────────────────────
