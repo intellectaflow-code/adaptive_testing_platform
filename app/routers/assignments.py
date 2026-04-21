@@ -1,7 +1,7 @@
-# app/routers/assignments.py
-
 from fastapi import APIRouter, Depends, HTTPException
 import asyncpg
+from typing import List
+from pydantic import BaseModel
 
 from app.database import get_db
 from app.dependencies import get_current_user, require_teacher_up, require_student
@@ -9,15 +9,17 @@ from app.schemas.assignments import (
     TeacherAssignmentCreate,
     TeacherAssignmentResponse,
     TeacherAssignmentUpdate,
+    StudentAssignmentAnswerCreate,
     StudentAssignmentAnswerEvaluate,
+    BulkAnswerCreate
 )
 
 router = APIRouter(prefix="/assignments", tags=["Assignments"])
 
-
 # =====================================================
 # UPGRADED CREATE ASSIGNMENT ROUTE
 # Creates assignment + saves selected questions
+# 1. CREATE ASSIGNMENT
 # =====================================================
 
 @router.post("/", response_model=TeacherAssignmentResponse)
@@ -139,7 +141,6 @@ async def create_assignment(
 
 # =====================================================
 # 2. LIST MY ASSIGNMENTS
-# GET /assignments/my
 # =====================================================
 @router.get("/my")
 async def list_my_assignments(
@@ -158,10 +159,14 @@ async def list_my_assignments(
 
     return [dict(r) for r in rows]
 
+
+# =====================================================
+# 3. GET ASSIGNMENT DETAILS
+# =====================================================
 @router.get("/{assignment_id}")
 async def get_assignment(
     assignment_id: str,
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_student),
     db: asyncpg.Connection = Depends(get_db),
 ):
     assignment = await db.fetchrow(
@@ -231,8 +236,7 @@ async def get_assignment(
     }
 
 # =====================================================
-# 4. AVAILABLE ASSIGNMENTS FOR STUDENTS
-# GET /assignments/available
+# 4. AVAILABLE ASSIGNMENTS
 # =====================================================
 @router.get("/available/list")
 async def available_assignments(
@@ -253,7 +257,6 @@ async def available_assignments(
 
 # =====================================================
 # 5. START SUBMISSION
-# POST /assignments/{id}/start
 # =====================================================
 @router.post("/{assignment_id}/start")
 async def start_submission(
@@ -279,9 +282,10 @@ async def start_submission(
         """
         INSERT INTO public.student_assignment_submissions (
             assignment_id,
-            student_id
+            student_id,
+            status
         )
-        VALUES ($1,$2)
+        VALUES ($1,$2,'in_progress')
         RETURNING id
         """,
         assignment_id,
@@ -292,14 +296,11 @@ async def start_submission(
 
 
 # =====================================================
-# 6. SAVE ANSWER
-# POST /assignments/submissions/{id}/answers
+# 6. SAVE SINGLE ANSWER (SCHEMA ALIGNED)
 # =====================================================
-@router.post("/submissions/{submission_id}/answers")
+@router.post("/answers")
 async def save_answer(
-    submission_id: str,
-    question_id: str,
-    answer_text: str,
+    payload: StudentAssignmentAnswerCreate,
     current_user: dict = Depends(require_student),
     db: asyncpg.Connection = Depends(get_db),
 ):
@@ -308,26 +309,64 @@ async def save_answer(
         INSERT INTO public.student_assignment_answers (
             submission_id,
             question_id,
-            answer_text
+            answer_text,
+            file_url
         )
-        VALUES ($1,$2,$3)
+        VALUES ($1,$2,$3,$4)
 
         ON CONFLICT (submission_id, question_id)
         DO UPDATE SET
             answer_text = EXCLUDED.answer_text,
+            file_url = EXCLUDED.file_url,
             updated_at = now()
         """,
-        submission_id,
-        question_id,
-        answer_text,
+        payload.submission_id,
+        payload.question_id,
+        payload.answer_text,
+        payload.file_url,
     )
 
     return {"success": True}
 
 
 # =====================================================
-# 7. SUBMIT ASSIGNMENT
-# POST /assignments/submissions/{id}/submit
+# 7. SAVE BULK ANSWERS (FAST)
+# =====================================================
+@router.post("/answers/bulk")
+async def save_bulk_answers(
+    payload: BulkAnswerCreate,
+    current_user: dict = Depends(require_student),
+    db: asyncpg.Connection = Depends(get_db),
+):
+    async with db.transaction():
+        for ans in payload.answers:
+            await db.execute(
+                """
+                INSERT INTO public.student_assignment_answers (
+                    submission_id,
+                    question_id,
+                    answer_text,
+                    file_url
+                )
+                VALUES ($1,$2,$3,$4)
+
+                ON CONFLICT (submission_id, question_id)
+                DO UPDATE SET
+                    answer_text = EXCLUDED.answer_text,
+                    file_url = EXCLUDED.file_url,
+                    updated_at = now()
+                """,
+                ans.submission_id,
+                ans.question_id,
+                ans.answer_text,
+                ans.file_url,
+            )
+
+    return {"success": True}
+
+
+# =====================================================
+# 8. SUBMIT ASSIGNMENT
 # =====================================================
 @router.post("/submissions/{submission_id}/submit")
 async def submit_assignment(
@@ -335,23 +374,27 @@ async def submit_assignment(
     current_user: dict = Depends(require_student),
     db: asyncpg.Connection = Depends(get_db),
 ):
-    await db.execute(
+    result = await db.execute(
         """
         UPDATE public.student_assignment_submissions
         SET
             status = 'submitted',
             submitted_at = now()
         WHERE id = $1
+          AND student_id = $2
         """,
         submission_id,
+        current_user["id"],
     )
+
+    if result == "UPDATE 0":
+        raise HTTPException(status_code=404, detail="Submission not found")
 
     return {"success": True}
 
 
 # =====================================================
-# 8. TEACHER GRADE ANSWER
-# POST /assignments/answers/{id}/grade
+# 9. TEACHER GRADING
 # =====================================================
 @router.post("/answers/{answer_id}/grade")
 async def grade_answer(

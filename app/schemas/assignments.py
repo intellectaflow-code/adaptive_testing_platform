@@ -1,4 +1,5 @@
 from __future__ import annotations
+from typing import List
 
 import uuid
 from datetime import datetime
@@ -175,6 +176,9 @@ class StudentAssignmentAnswerResponse(StudentAssignmentAnswerBase):
     created_at: datetime
     updated_at: datetime
 
+
+class BulkAnswerCreate(BaseModel):
+    answers: List[StudentAssignmentAnswerCreate]
 
 # =====================================================
 # FORWARD REF REBUILDS
