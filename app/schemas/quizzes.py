@@ -164,3 +164,13 @@ class QuizSubmission(BaseModel):
     answers: List[dict]  # Expects [{"question_id": "...", "selected_answer": "..."}]
     tab_switches: int = 0
     time_spent: int = 0
+
+class DescriptiveAnswer(BaseModel):
+    question_id: str
+    answer_text: str = ""
+ 
+class DescriptiveSubmission(BaseModel):
+    attempt_id: str
+    answers: List[DescriptiveAnswer]
+    tab_switches: int = 0
+    time_spent: int = 0
