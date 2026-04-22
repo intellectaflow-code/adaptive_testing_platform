@@ -163,7 +163,6 @@ class StudentAssignmentAnswerEvaluate(BaseSchema):
     """Payload for teacher evaluation of an answer."""
     score_awarded: Decimal
     feedback: Optional[str] = None
-    evaluated_by: uuid.UUID
 
 
 class StudentAssignmentAnswerResponse(StudentAssignmentAnswerBase):

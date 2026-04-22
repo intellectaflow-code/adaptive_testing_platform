@@ -166,7 +166,7 @@ async def list_my_assignments(
 @router.get("/{assignment_id}")
 async def get_assignment(
     assignment_id: str,
-    current_user: dict = Depends(require_student),
+    current_user: dict = Depends(get_current_user),
     db: asyncpg.Connection = Depends(get_db),
 ):
     assignment = await db.fetchrow(
@@ -403,23 +403,190 @@ async def grade_answer(
     current_user: dict = Depends(require_teacher_up),
     db: asyncpg.Connection = Depends(get_db),
 ):
-    await db.execute(
+    # -----------------------------
+    # Update answer marks
+    # -----------------------------
+    row = await db.fetchrow(
         """
         UPDATE public.student_assignment_answers
         SET
             score_awarded = $1,
-            feedback = $2,
-            evaluated_by = $3,
+            evaluated_by = $2,
             evaluated_at = now()
-        WHERE id = $4
+        WHERE id = $3
+        RETURNING submission_id
         """,
         payload.score_awarded,
-        payload.feedback,
         current_user["id"],
         answer_id,
     )
 
-    return {"success": True}
+    if not row:
+        raise HTTPException(404, "Answer not found")
+
+    submission_id = row["submission_id"]
+
+    # -----------------------------
+    # Recalculate total score
+    # -----------------------------
+    total = await db.fetchval(
+        """
+        SELECT COALESCE(SUM(score_awarded),0)
+        FROM public.student_assignment_answers
+        WHERE submission_id = $1
+        """,
+        submission_id,
+    )
+
+    # -----------------------------
+    # Update submission
+    # -----------------------------
+    await db.execute(
+        """
+        UPDATE public.student_assignment_submissions
+        SET
+            total_score = $1,
+            status = 'evaluated',
+            updated_at = now()
+        WHERE id = $2
+        """,
+        total,
+        submission_id,
+    )
+
+    return {
+        "success": True,
+        "total_score": float(total)
+    }
+
+
+# =====================================================
+# 10. TEACHER VIEW SUBMISSIONS
+# GET /assignments/{assignment_id}/submissions
+# =====================================================
+
+@router.get("/{assignment_id}/submissions")
+async def get_assignment_submissions(
+    assignment_id: str,
+    current_user: dict = Depends(require_teacher_up),
+    db: asyncpg.Connection = Depends(get_db),
+):
+    # -----------------------------
+    # Check assignment exists
+    # -----------------------------
+    assignment = await db.fetchrow(
+        """
+        SELECT id, teacher_id, total_marks
+        FROM public.teacher_assignments
+        WHERE id = $1
+        """,
+        assignment_id,
+    )
+
+    if not assignment:
+        raise HTTPException(
+            status_code=404,
+            detail="Assignment not found"
+        )
+
+    # -----------------------------
+    # Owner check
+    # -----------------------------
+    if str(assignment["teacher_id"]) != str(current_user["id"]):
+        raise HTTPException(
+            status_code=403,
+            detail="Not allowed"
+        )
+
+    # -----------------------------
+    # Get student submissions
+    # -----------------------------
+    rows = await db.fetch(
+        """
+        SELECT
+            s.id,
+            s.student_id,
+            s.status,
+            s.total_score,
+            s.submitted_at,
+
+            p.full_name,
+            p.usn,
+            p.email
+
+        FROM public.student_assignment_submissions s
+        JOIN public.profiles p
+        ON p.id = s.student_id
+
+        WHERE s.assignment_id = $1
+        ORDER BY s.submitted_at DESC NULLS LAST
+        """,
+        assignment_id,
+    )
+
+    return {
+        "total_marks": assignment["total_marks"],
+        "submissions": [dict(r) for r in rows]
+    }
+
+
+# =====================================================
+# GET ONE SUBMISSION WITH ANSWERS
+# =====================================================
+
+@router.get("/submission/{submission_id}")
+async def get_submission_detail(
+    submission_id: str,
+    current_user: dict = Depends(require_teacher_up),
+    db: asyncpg.Connection = Depends(get_db),
+):
+    row = await db.fetchrow(
+        """
+        SELECT
+            s.*,
+            p.full_name,
+            p.usn,
+            a.teacher_id,
+            a.title as assignment_title
+        FROM public.student_assignment_submissions s
+        JOIN public.profiles p
+          ON p.id = s.student_id
+        JOIN public.teacher_assignments a
+          ON a.id = s.assignment_id
+        WHERE s.id = $1
+        """,
+        submission_id,
+    )
+
+    if not row:
+        raise HTTPException(404, "Submission not found")
+
+    if str(row["teacher_id"]) != str(current_user["id"]):
+        raise HTTPException(403, "Not allowed")
+
+    answers = await db.fetch(
+        """
+        SELECT
+            ans.*,
+            qb.question_text,
+            taq.marks as max_marks
+        FROM public.student_assignment_answers ans
+        JOIN public.question_bank qb
+          ON qb.id = ans.question_id
+        LEFT JOIN public.teacher_assignment_questions taq
+          ON taq.assignment_id = $1
+         AND taq.question_id = ans.question_id
+        WHERE ans.submission_id = $2
+        ORDER BY taq.question_order
+        """,
+        row["assignment_id"],
+        submission_id,
+    )
+
+    return {
+        **dict(row),
+        "answers": [dict(a) for a in answers]
+    }
 
 # =====================================================
 # UPDATE ASSIGNMENT (FULL EDIT ROUTE)
