@@ -14,7 +14,7 @@ from app.services.grading import (
 )
 from app.services.activity import log_activity
 
-from app.services.descriptive_ai import auto_evaluate_descriptive_answers
+from app.services.descriptive_ai import auto_evaluate_assignment
 
 
 router = APIRouter(prefix="/attempts", tags=["Quiz Attempts"])
@@ -269,7 +269,7 @@ async def submit_attempt(
     # ----------------------------------------
     # AI evaluate short + descriptive answers
     # ----------------------------------------
-    await auto_evaluate_descriptive_answers(db, attempt_id)
+    await auto_evaluate_assignment(db, attempt_id)
 
     # ----------------------------------------
     # Recalculate total after AI grading

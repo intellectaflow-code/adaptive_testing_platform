@@ -7,18 +7,13 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-
 client = AsyncOpenAI(
-    api_key=GROQ_API_KEY,
+    api_key=os.getenv("GROQ_API_KEY"),
     base_url="https://api.groq.com/openai/v1",
 )
 
-
 async def evaluate_descriptive_answer(
     question_text: str,
-    topic: str,
-    difficulty: str,
     student_answer: str,
     max_marks: float,
 ):
@@ -27,12 +22,6 @@ You are a strict but fair university evaluator.
 
 Question:
 {question_text}
-
-Topic:
-{topic}
-
-Difficulty:
-{difficulty}
 
 Maximum Marks:
 {max_marks}
@@ -46,48 +35,48 @@ Evaluate based on:
 3. Relevance
 4. Clarity
 
-Return ONLY valid JSON:
+Return ONLY JSON:
 
 {{
-  "score": number,
-  "feedback": "short feedback"
+  "score": number
 }}
 """
 
     response = await client.chat.completions.create(
         model="llama-3.1-8b-instant",
-        max_tokens=300,
+        max_tokens=120,
+        temperature=0.2,
         messages=[
             {
                 "role": "system",
-                "content": "You are a fair academic evaluator. Return ONLY valid JSON."
+                "content": "Return only valid JSON."
             },
             {
                 "role": "user",
                 "content": prompt
-            },
+            }
         ],
-        temperature=0.2,
     )
 
     content = response.choices[0].message.content.strip()
 
-    # Strip markdown fences
-    content = re.sub(r"^```(?:json)?\s*", "", content)
-    content = re.sub(r"\s*```$", "", content)
+    content = re.sub(r"^```(?:json)?", "", content).strip()
+    content = re.sub(r"```$", "", content).strip()
 
-    # Extract JSON object
-    json_match = re.search(r"\{.*\}", content, re.DOTALL)
-    if json_match:
-        content = json_match.group(0)
+    match = re.search(
+        r"\{.*\}",
+        content,
+        re.DOTALL
+    )
 
-    try:
-        data = json.loads(content)
-    except json.JSONDecodeError as e:
-        raise ValueError(f"AI returned invalid JSON: {e}\nRaw: {content[:300]}")
+    if match:
+        content = match.group(0)
 
-    score = float(data.get("score", 0))
-    feedback = data.get("feedback", "")
+    data = json.loads(content)
+
+    score = float(
+        data.get("score", 0)
+    )
 
     if score < 0:
         score = 0
@@ -95,86 +84,83 @@ Return ONLY valid JSON:
     if score > max_marks:
         score = max_marks
 
-    return {
-        "score": score,
-        "feedback": feedback
-    }
+    return score
 
 
-async def auto_evaluate_descriptive_answers(
+async def auto_evaluate_assignment(
     db: asyncpg.Connection,
-    attempt_id: str
+    submission_id: str
 ):
-    """
-    Auto evaluate all short/descriptive answers
-    for one attempt.
-    """
-
     rows = await db.fetch(
         """
         SELECT
-            sa.id AS answer_id,
-            sa.answer_text,
-            qb.id AS question_id,
+            ans.id,
+            ans.answer_text,
             qb.question_text,
-            qb.question_type,
-            qb.topic,
-            qb.difficulty,
-            qb.marks
+            taq.marks
 
-        FROM public.student_answers sa
+        FROM public.student_assignment_answers ans
+
         JOIN public.question_bank qb
-            ON qb.id = sa.question_id
+          ON qb.id = ans.question_id
 
-        WHERE sa.attempt_id = $1
-          AND qb.question_type IN ('short', 'descriptive')
-          AND sa.answer_text IS NOT NULL
-          AND TRIM(sa.answer_text) <> ''
+        JOIN public.student_assignment_submissions s
+          ON s.id = ans.submission_id
+
+        JOIN public.teacher_assignment_questions taq
+          ON taq.assignment_id = s.assignment_id
+         AND taq.question_id = ans.question_id
+
+        WHERE ans.submission_id = $1
         """,
-        attempt_id
+        submission_id
     )
+
+    total = 0
 
     for row in rows:
         try:
-            result = await evaluate_descriptive_answer(
+            score = await evaluate_descriptive_answer(
                 question_text=row["question_text"],
-                topic=row["topic"] or "",
-                difficulty=row["difficulty"] or "medium",
-                student_answer=row["answer_text"],
+                student_answer=row["answer_text"] or "",
                 max_marks=float(row["marks"]),
             )
 
+            total += score
+
             await db.execute(
                 """
-                UPDATE public.student_answers
+                UPDATE public.student_assignment_answers
                 SET
                     score_awarded = $1,
-                    is_correct = CASE
-                        WHEN $1 >= (
-                            SELECT marks * 0.4
-                            FROM public.question_bank
-                            WHERE id = $2
-                        )
-                        THEN TRUE
-                        ELSE FALSE
-                    END,
-                    evaluated_at = NOW()
-                WHERE id = $3
+                    evaluated_at = now()
+                WHERE id = $2
                 """,
-                result["score"],
-                str(row["question_id"]),
-                str(row["answer_id"])
+                score,
+                row["id"]
             )
 
-        except Exception:
+        except:
             await db.execute(
                 """
-                UPDATE public.student_answers
+                UPDATE public.student_assignment_answers
                 SET
                     score_awarded = 0,
-                    is_correct = FALSE,
-                    evaluated_at = NOW()
+                    evaluated_at = now()
                 WHERE id = $1
                 """,
-                str(row["answer_id"])
+                row["id"]
             )
+
+    await db.execute(
+        """
+        UPDATE public.student_assignment_submissions
+        SET
+            total_score = $1,
+            status = 'evaluated',
+            updated_at = now()
+        WHERE id = $2
+        """,
+        total,
+        submission_id
+    )

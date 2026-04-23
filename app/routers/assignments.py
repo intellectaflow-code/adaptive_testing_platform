@@ -13,6 +13,8 @@ from app.schemas.assignments import (
     StudentAssignmentAnswerEvaluate,
     BulkAnswerCreate
 )
+from app.services.descriptive_ai import auto_evaluate_assignment
+
 
 router = APIRouter(prefix="/assignments", tags=["Assignments"])
 
