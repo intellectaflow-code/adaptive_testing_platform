@@ -307,7 +307,7 @@ async def save_bulk_answers(
                 ans.submission_id,
                 ans.question_id,
                 ans.answer_text,
-                ans.file_urls,   # ✅ was ans.file_url
+                ans.file_urls,  
             )
     return {"success": True}
 # =====================================================
