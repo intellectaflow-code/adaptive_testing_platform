@@ -1,16 +1,10 @@
-import os
 import json
 import re
 import asyncpg
-from openai import AsyncOpenAI
-from dotenv import load_dotenv
 
-load_dotenv()
+# USE EXISTING WORKING CLIENT
+from app.services.groq_client import client
 
-client = AsyncOpenAI(
-    api_key=os.getenv("GROQ_API_KEY"),
-    base_url="https://api.groq.com/openai/v1",
-)
 
 async def evaluate_descriptive_answer(
     question_text: str,
@@ -60,9 +54,11 @@ Return ONLY JSON:
 
     content = response.choices[0].message.content.strip()
 
+    # Clean markdown
     content = re.sub(r"^```(?:json)?", "", content).strip()
     content = re.sub(r"```$", "", content).strip()
 
+    # Extract JSON
     match = re.search(
         r"\{.*\}",
         content,
@@ -74,9 +70,7 @@ Return ONLY JSON:
 
     data = json.loads(content)
 
-    score = float(
-        data.get("score", 0)
-    )
+    score = float(data.get("score", 0))
 
     if score < 0:
         score = 0
@@ -140,7 +134,9 @@ async def auto_evaluate_assignment(
                 row["id"]
             )
 
-        except:
+        except Exception as e:
+            print("AI Evaluation Error:", e)
+
             await db.execute(
                 """
                 UPDATE public.student_assignment_answers

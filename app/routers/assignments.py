@@ -333,7 +333,18 @@ async def submit_assignment(
     if result == "UPDATE 0":
         raise HTTPException(status_code=404, detail="Submission not found")
 
-    return {"success": True}
+# -----------------------------------
+    # AI AUTO EVALUATION
+    # -----------------------------------
+    await auto_evaluate_assignment(
+        db,
+        submission_id
+    )
+
+    return {
+        "success": True,
+        "message": "Submitted successfully"
+    }
 
 
 # =====================================================
