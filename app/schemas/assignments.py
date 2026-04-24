@@ -147,7 +147,7 @@ class StudentAssignmentSubmissionDetail(StudentAssignmentSubmissionResponse):
 class StudentAssignmentAnswerBase(BaseSchema):
     question_id: uuid.UUID
     answer_text: Optional[str] = None
-    file_url: Optional[str] = None
+    file_urls: Optional[List[str]] = None  
 
 
 class StudentAssignmentAnswerCreate(StudentAssignmentAnswerBase):
