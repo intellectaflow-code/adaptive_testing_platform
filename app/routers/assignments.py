@@ -346,7 +346,6 @@ async def submit_assignment(
         "message": "Submitted successfully"
     }
 
-
 # =====================================================
 # 9. TEACHER GRADING
 # =====================================================
@@ -365,10 +364,10 @@ async def grade_answer(
         UPDATE public.student_assignment_answers
         SET
             score_awarded = $1,
-            feedback      = $2,
-            evaluated_by  = $3,
+            evaluated_by  = $2,
             evaluated_at  = now()
-        WHERE id = $4
+        WHERE id = $3
+        RETURNING submission_id
         """,
         payload.score_awarded,
         current_user["id"],
@@ -376,7 +375,10 @@ async def grade_answer(
     )
 
     if not row:
-        raise HTTPException(404, "Answer not found")
+        raise HTTPException(
+            404,
+            "Answer not found"
+        )
 
     submission_id = row["submission_id"]
 
@@ -412,7 +414,6 @@ async def grade_answer(
         "success": True,
         "total_score": float(total)
     }
-
 
 # =====================================================
 # 10. TEACHER VIEW SUBMISSIONS
