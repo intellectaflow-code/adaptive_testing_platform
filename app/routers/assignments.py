@@ -160,6 +160,7 @@ async def get_assignment(
         "questions": [dict(q) for q in questions]
     }
 
+# AFTER — inner join enrollments so only enrolled courses appear
 @router.get("/available/list")
 async def available_assignments(
     current_user: dict = Depends(require_student),
@@ -172,25 +173,24 @@ async def available_assignments(
             c.name              AS subject_name,
             c.code              AS subject_code,
             p.full_name         AS teacher_name,
-            -- BUG FIX: join submission so the student's real status comes through
             sas.id              AS submission_id,
             COALESCE(sas.status, 'not_started') AS status,
-            -- BUG FIX: sum up awarded scores for the evaluated score chip
             (
                 SELECT COALESCE(SUM(score_awarded), 0)
                 FROM public.student_assignment_answers
                 WHERE submission_id = sas.id
             )                   AS total_score,
-            -- BUG FIX: question count for the detail modal info grid
             (
                 SELECT COUNT(*)
                 FROM public.teacher_assignment_questions
                 WHERE assignment_id = ta.id
             )::int              AS question_count
         FROM public.teacher_assignments ta
-        LEFT JOIN public.courses   c   ON c.id  = ta.course_id
-        LEFT JOIN public.profiles  p   ON p.id  = ta.teacher_id
-        -- BUG FIX: left join the current student's submission only (not all students)
+        -- ✅ Only courses the student is enrolled in
+        INNER JOIN public.enrollments   e   ON e.course_id  = ta.course_id
+                                           AND e.student_id = $1
+        LEFT JOIN public.courses        c   ON c.id         = ta.course_id
+        LEFT JOIN public.profiles       p   ON p.id         = ta.teacher_id
         LEFT JOIN public.student_assignment_submissions sas
                ON sas.assignment_id = ta.id
               AND sas.student_id    = $1
@@ -201,7 +201,6 @@ async def available_assignments(
     )
 
     return [dict(r) for r in rows]
-
 
 # =====================================================
 # 5. START SUBMISSION
@@ -590,8 +589,8 @@ async def get_assignment_results(
         "answers":    [dict(a) for a in answers],
     }
 
-# =====================================================
-# UPLOAD ANSWER ATTACHMENTS
+
+# UPLOAD ANSWER ATTACHMENTS==========
 @router.post("/answers/attachments")
 async def upload_answer_attachments(
     submission_id: str = Form(...),
@@ -742,7 +741,6 @@ async def update_assignment(
                 assignment_id, total_marks,
             )
         return dict(updated)
-
 
 # =====================================================
 # DELETE ASSIGNMENT
