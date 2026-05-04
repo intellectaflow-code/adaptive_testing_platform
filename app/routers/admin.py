@@ -327,3 +327,54 @@ async def create_teacher(
     )
 
     return {"message": "Teacher created"}
+
+
+@router.post("/students/promote")
+async def promote_students(
+    branch: str | None = None,
+    current_user: dict = Depends(require_admin_or_hod),
+    db: asyncpg.Connection = Depends(get_db),
+):
+    query = """
+        UPDATE public.profiles
+        SET sem = CASE
+            WHEN sem < 8 THEN sem + 1
+            ELSE sem
+        END
+        WHERE role = 'student'
+    """
+
+    params = []
+
+    if branch:
+        query += " AND branch = $1"
+        params.append(branch)
+
+    await db.execute(query, *params)
+
+    return {"success": True, "message": "Students promoted"}
+
+@router.post("/students/demote")
+async def demote_students(
+    branch: str | None = None,
+    current_user: dict = Depends(require_admin_or_hod),
+    db: asyncpg.Connection = Depends(get_db),
+):
+    query = """
+        UPDATE public.profiles
+        SET sem = CASE
+            WHEN sem > 1 THEN sem - 1
+            ELSE sem
+        END
+        WHERE role = 'student'
+    """
+
+    params = []
+
+    if branch:
+        query += " AND branch = $1"
+        params.append(branch)
+
+    await db.execute(query, *params)
+
+    return {"success": True, "message": "Students moved back one semester"}

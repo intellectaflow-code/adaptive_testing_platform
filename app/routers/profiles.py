@@ -110,11 +110,15 @@ async def update_profile_photo(
         raise HTTPException(404, "Profile not found")
 
     return dict(row)
+
+
 # ---- Admin endpoints ----
 @router.get("", response_model=List[ProfileOut])
 async def list_profiles(
     role: Optional[str] = None,
     branch: Optional[str] = None,
+    sem: Optional[int] = None,              # ✅ NEW
+    course_id: Optional[str] = None,        # ✅ NEW
     skip: int = 0,
     limit: int = 50,
     current_user: dict = Depends(require_admin_or_hod),
@@ -139,6 +143,22 @@ async def list_profiles(
     if branch:
         where_parts.append(f"branch = ${idx}")
         params.append(branch)
+        idx += 1
+
+    if sem:
+        where_parts.append(f"sem = ${idx}")     # ✅ ADD THIS
+        params.append(sem)
+        idx += 1
+
+    if course_id:
+        where_parts.append(f"""
+        id IN (
+            SELECT student_id
+            FROM public.course_students
+            WHERE course_id = ${idx}
+        )
+        """)                                     # ✅ ADD THIS
+        params.append(course_id)
         idx += 1
 
     where = " AND ".join(where_parts)
@@ -207,4 +227,3 @@ async def soft_delete_profile(
     if result == "UPDATE 0":
         raise HTTPException(status_code=404, detail="Profile not found")
     await log_activity(db, str(admin["id"]), "delete_profile", {"target": user_id})
-

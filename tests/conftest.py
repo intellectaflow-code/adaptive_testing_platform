@@ -1,48 +1,36 @@
-"""
-conftest.py – shared pytest fixtures for the quiz platform API.
-
-Run tests:
-    pytest tests/ -v
-"""
-import asyncio
 import pytest
-import asyncpg
-import os
-from httpx import AsyncClient, ASGITransport
-from dotenv import load_dotenv
-
-load_dotenv()
-
-# ── Override settings for tests ───────────────────────────────────────────────
-os.environ.setdefault("APP_ENV", "testing")
-os.environ.setdefault("DEBUG", "true")
-os.environ.setdefault("SUPABASE_JWT_SECRET", "test-secret")
-os.environ.setdefault("DATABASE_URL", os.getenv("DATABASE_URL", ""))
-
+from fastapi.testclient import TestClient
 from app.main import app
-from app.config import get_settings
+from app.dependencies import get_current_user
 
 
-@pytest.fixture(scope="session")
-def event_loop():
-    loop = asyncio.new_event_loop()
-    yield loop
-    loop.close()
+# Mock student user
+def mock_student():
+    return {
+        "id": "11111111-1111-1111-1111-111111111111",
+        "role": "student",
+        "branch": "CSE"
+    }
 
 
-@pytest.fixture(scope="session")
-async def client():
-    """Async HTTP client that talks directly to the ASGI app (no network)."""
-    async with AsyncClient(
-        transport=ASGITransport(app=app),
-        base_url="http://testserver",
-    ) as c:
-        yield c
+# Mock teacher user
+def mock_teacher():
+    return {
+        "id": "22222222-2222-2222-2222-222222222222",
+        "role": "teacher",
+        "branch": "CSE"
+    }
 
 
-# ── Helpers ───────────────────────────────────────────────────────────────────
+@pytest.fixture
+def student_client():
+    app.dependency_overrides[get_current_user] = mock_student
+    yield TestClient(app)
+    app.dependency_overrides = {}
 
-def auth_header(token: str) -> dict:
-    """Build an Authorization header dict."""
-    return {"Authorization": f"Bearer {token}"}
 
+@pytest.fixture
+def teacher_client():
+    app.dependency_overrides[get_current_user] = mock_teacher
+    yield TestClient(app)
+    app.dependency_overrides = {}
