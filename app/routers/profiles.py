@@ -213,6 +213,34 @@ async def admin_update_profile(
     await log_activity(db, str(admin["id"]), "admin_update_profile", {"target": user_id})
     return dict(row)
 
+@router.delete("/me/photo", response_model=ProfileOut)
+async def remove_profile_photo(
+    current_user: dict = Depends(get_current_user),
+    db: asyncpg.Connection = Depends(get_db),
+):
+    supabase = get_supabase()
+
+    # Delete from Supabase storage (try all common extensions)
+    for ext in ["jpg", "jpeg", "png", "webp"]:
+        try:
+            supabase.storage.from_("avatars").remove([f"{current_user['id']}.{ext}"])
+        except Exception:
+            pass  # File may not exist with that extension, that's fine
+
+    row = await db.fetchrow(
+        """
+        UPDATE public.profiles
+        SET profile_photo = NULL, updated_at = now()
+        WHERE id = $1 AND is_deleted = false
+        RETURNING *
+        """,
+        current_user["id"],
+    )
+    if not row:
+        raise HTTPException(404, "Profile not found")
+
+    return dict(row)
+
 
 @router.delete("/{user_id}", status_code=204)
 async def soft_delete_profile(
