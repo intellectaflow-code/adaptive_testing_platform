@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, Request
 from typing import List
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 import asyncpg
 
 from app.database import get_db
@@ -67,10 +68,10 @@ async def start_attempt(
         raise HTTPException(status_code=403, detail="Not enrolled in this course")
 
     # Timing check
-    now = datetime.now()
+    now = datetime.now(ZoneInfo("Asia/Kolkata"))
     print("start=========================",now)    
-    if quiz["start_time"] > now:
-        raise HTTPException(status_code=403, detail="Quiz has not started yet")
+    if quiz["start_time"] and quiz["start_time"] > now:
+        raise HTTPException(status_code=403, detail="Quiz has not started yet !")
 
     # Check for special permissions
     permission = await db.fetchrow(

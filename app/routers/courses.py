@@ -255,7 +255,7 @@ async def update_course(
 @router.delete("/{course_id}", status_code=204)
 async def delete_course(
     course_id: str,
-    current_user: dict = Depends(require_admin_or_hod),
+    current_user: dict = Depends(require_teacher_up),
     db: asyncpg.Connection = Depends(get_db),
 ):
     await db.execute(

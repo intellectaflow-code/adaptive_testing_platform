@@ -381,29 +381,39 @@ async def top_performers(
     )
     return [dict(r) for r in rows]
 
-
 @router.get("/course/{course_id}/class-summary")
 async def class_summary(
     course_id: UUID,
     _: dict = Depends(require_teacher_up),
     db: asyncpg.Connection = Depends(get_db),
 ):
-    # Aggregating directly from quiz_attempts linked to your quizzes table
-    row = await db.fetchrow(
-        """
-        SELECT 
-            COUNT(DISTINCT qa.student_id) as total_students,
-            COUNT(qa.id) as total_attempts,
-            ROUND(AVG(qa.total_score)::numeric, 2) as class_average,
-            MAX(qa.total_score) as highest_score,
-            MIN(qa.total_score) as lowest_score
-        FROM public.quiz_attempts qa
-        JOIN public.quizzes q ON q.id = qa.quiz_id
-        WHERE q.course_id = $1 AND qa.status = 'submitted'
-        """,
-        course_id
-    )
-    return dict(row) if row else {}
+    row = await db.fetchrow("""
+        SELECT *
+        FROM public.class_analytics_summary
+        WHERE course_id = $1
+        ORDER BY updated_at DESC
+        LIMIT 1
+    """, course_id)
+
+    if not row:
+        return {}
+
+    return {
+        "total_students": row["total_students"],
+        "total_tests": row["total_tests"],
+        "total_assignments": row["total_assignments"],
+
+        "class_average": float(row["avg_score"] or 0),
+        "pass_rate": float(row["pass_rate"] or 0),
+
+        "improvement_rate": float(row["improvement_rate"] or 0),
+        "consistency_score": float(row["consistency_score"] or 0),
+        "engagement_score": float(row["engagement_score"] or 0),
+
+        "on_track_percent": float(row["on_track_percent"] or 0),
+        "needs_improvement_percent": float(row["needs_improvement_percent"] or 0),
+        "at_risk_percent": float(row["at_risk_percent"] or 0),
+    }
 
 
 @router.get("/course/{course_id}/score-trend")
@@ -412,19 +422,95 @@ async def class_score_trend(
     _: dict = Depends(require_teacher_up),
     db: asyncpg.Connection = Depends(get_db),
 ):
-    rows = await db.fetch(
-        """
-        SELECT 
-            DATE(a.submitted_at) as date,
-            ROUND(AVG(a.total_score)::numeric, 2) as avg_score
-        FROM public.quiz_attempts a
-        JOIN public.quizzes q ON q.id = a.quiz_id
-        WHERE q.course_id = $1
-        AND a.status IN ('submitted','evaluated')
-        GROUP BY DATE(a.submitted_at)
-        ORDER BY DATE(a.submitted_at)
-        """,
-        course_id
-    )
+    rows = await db.fetch("""
+        SELECT date, avg_score
+        FROM public.test_score_trend
+        WHERE course_id = $1
+        ORDER BY date
+    """, course_id)
 
     return [dict(r) for r in rows]
+
+@router.get("/course/{course_id}/assignment-trend")
+async def assignment_trend(
+    course_id: UUID,
+    _: dict = Depends(require_teacher_up),
+    db: asyncpg.Connection = Depends(get_db),
+):
+    rows = await db.fetch("""
+        SELECT date, avg_score
+        FROM public.assignment_score_trend
+        WHERE course_id = $1
+        ORDER BY date
+    """, course_id)
+
+    return [dict(r) for r in rows]
+
+@router.get("/course/{course_id}/comparison-trend")
+async def comparison_trend(
+    course_id: UUID,
+    _: dict = Depends(require_teacher_up),
+    db: asyncpg.Connection = Depends(get_db),
+):
+    rows = await db.fetch("""
+        SELECT 
+            t.date,
+            t.avg_score as test_avg,
+            a.avg_score as assignment_avg
+        FROM public.test_score_trend t
+        LEFT JOIN public.assignment_score_trend a 
+        ON t.date = a.date AND t.course_id = a.course_id
+        WHERE t.course_id = $1
+        ORDER BY t.date
+    """, course_id)
+
+    return [dict(r) for r in rows]
+
+
+@router.get("/course/{course_id}/risk-distribution")
+async def risk_distribution(
+    course_id: UUID,
+    _: dict = Depends(require_teacher_up),
+    db: asyncpg.Connection = Depends(get_db),
+):
+    rows = await db.fetch("""
+        SELECT risk_level, COUNT(*) as count
+        FROM public.student_risk_levels
+        WHERE course_id = $1
+        GROUP BY risk_level
+    """, course_id)
+
+    result = {
+        "on_track": 0,
+        "needs_improvement": 0,
+        "at_risk": 0
+    }
+
+    for r in rows:
+        result[r["risk_level"]] = r["count"]
+
+    total = sum(result.values()) or 1
+
+    return {
+        "on_track_percent": round(result["on_track"] * 100 / total, 2),
+        "needs_improvement_percent": round(result["needs_improvement"] * 100 / total, 2),
+        "at_risk_percent": round(result["at_risk"] * 100 / total, 2),
+    }
+
+@router.get("/course/{course_id}/assignment-summary")
+async def assignment_summary(
+    course_id: UUID,
+    _: dict = Depends(require_teacher_up),
+    db: asyncpg.Connection = Depends(get_db),
+):
+    row = await db.fetchrow("""
+        SELECT 
+            COUNT(*) as total_submissions,
+            ROUND(AVG(marks_obtained)::numeric, 2) as avg_score,
+            COUNT(DISTINCT student_id) as students_submitted
+        FROM public.assignment_submissions s
+        JOIN public.assignments a ON s.assignment_id = a.id
+        WHERE a.course_id = $1
+    """, course_id)
+
+    return dict(row) if row else {}
