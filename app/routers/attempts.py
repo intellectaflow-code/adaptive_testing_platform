@@ -41,7 +41,6 @@ async def _assert_attempt_owner(attempt: dict, user: dict):
         raise HTTPException(status_code=403, detail="Not your attempt")
 
 
-# ---- Start attempt ----
 
 @router.post("/start/{quiz_id}", response_model=AttemptStartOut, status_code=201)
 async def start_attempt(
@@ -67,11 +66,21 @@ async def start_attempt(
     if not enrolled:
         raise HTTPException(status_code=403, detail="Not enrolled in this course")
 
-    # Timing check
+    # =========================
+    # 🔥 TIMEZONE FIX START
+    # =========================
     now = datetime.now(ZoneInfo("Asia/Kolkata"))
-    print("start=========================",now)    
-    if quiz["start_time"] and quiz["start_time"] > now:
+    print("NOW (IST) =========================", now)
+
+    start_time = quiz["start_time"]
+    if start_time:
+        start_time = start_time.replace(tzinfo=ZoneInfo("Asia/Kolkata"))
+
+    if start_time and start_time > now:
         raise HTTPException(status_code=403, detail="Quiz has not started yet !")
+    # =========================
+    # 🔥 TIMEZONE FIX END
+    # =========================
 
     # Check for special permissions
     permission = await db.fetchrow(
@@ -79,12 +88,20 @@ async def start_attempt(
         quiz_id, student_id,
     )
 
+    # =========================
+    # 🔥 END TIME FIX
+    # =========================
     end_time = quiz["end_time"]
+
     if permission and permission["override_end_time"]:
         end_time = permission["override_end_time"]
 
-    if end_time < now:
+    if end_time:
+        end_time = end_time.replace(tzinfo=ZoneInfo("Asia/Kolkata"))
+
+    if end_time and end_time < now:
         raise HTTPException(status_code=403, detail="Quiz has ended")
+    # =========================
 
     # Attempt count check
     existing_attempts = await db.fetchval(
@@ -112,7 +129,8 @@ async def start_attempt(
     )
     if in_progress:
         raise HTTPException(
-            status_code=409, detail="You already have an in-progress attempt. Submit it first."
+            status_code=409,
+            detail="You already have an in-progress attempt. Submit it first."
         )
 
     attempt_number = existing_attempts + 1
@@ -128,8 +146,13 @@ async def start_attempt(
         quiz_id, student_id, attempt_number, ip,
     )
 
-    await log_activity(db, student_id, "start_quiz_attempt",
-                       {"quiz_id": quiz_id, "attempt_id": str(attempt["id"])}, ip)
+    await log_activity(
+        db,
+        student_id,
+        "start_quiz_attempt",
+        {"quiz_id": quiz_id, "attempt_id": str(attempt["id"])},
+        ip
+    )
 
     extra_time = permission["extra_time_minutes"] if permission else 0
     effective_duration = (quiz["duration_minutes"] or 0) + extra_time
@@ -142,7 +165,6 @@ async def start_attempt(
         "duration_minutes": effective_duration or None,
         "end_time_override": end_time,
     }
-
 
 # ---- Submit answer ----
 

@@ -10,7 +10,7 @@ from app.schemas.courses import (
     AssignTeacherIn, EnrollStudentIn,
 )
 from app.config import get_settings
-from app.services.activity import log_activity
+# from app.services.activity import log_activity
 
 
 router = APIRouter(prefix="/courses", tags=["Courses"])
@@ -95,7 +95,7 @@ async def create_course(
             row["id"], str(current_user["id"])
         )
 
-        await log_activity(db, str(current_user["id"]), "create_course", {"course_id": str(row["id"])})
+        # await log_activity(db, str(current_user["id"]), "create_course", {"course_id": str(row["id"])})
         
         return dict(row)
 
