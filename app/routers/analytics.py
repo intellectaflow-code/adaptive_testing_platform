@@ -2,16 +2,19 @@ import statistics
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import StreamingResponse, Response
 from typing import List, Optional
 import asyncpg
+import io
+import os
 from uuid import UUID
 from datetime import date, datetime, time, timezone
 
 from app.database import get_db
-from app.dependencies import get_current_user, require_roles, require_teacher_up, require_student
+from app.dependencies import get_current_user, require_teacher_up, require_student
+from app.services.report_generate import build_student_report
 from app.schemas.analytics import (
-    StudentPerformanceOut, LeaderboardEntry
-
+    StudentPerformanceOut, LeaderboardEntry, StudentReportRequest, 
 )
 
 router = APIRouter(prefix="/analytics", tags=["Analytics"])
@@ -32,16 +35,15 @@ async def student_dashboard(
     date_filter_attempt = ""
     date_filter_trend = ""
 
-    # ✅ Ensure we cover the full day for the end date
     if start_date:
-        start_dt = datetime.combine(start_date, time.min)  # 00:00:00
+        start_dt = datetime.combine(start_date, time.min)
         date_filter_attempt += f" AND attempt_date >= ${param_idx}"
         date_filter_trend  += f" AND submitted_at >= ${param_idx}"
         params.append(start_dt)
         param_idx += 1
 
     if end_date:
-        end_dt = datetime.combine(end_date, time.max)  # 23:59:59.999999
+        end_dt = datetime.combine(end_date, time.max)
         date_filter_attempt += f" AND attempt_date <= ${param_idx}"
         date_filter_trend  += f" AND submitted_at <= ${param_idx}"
         params.append(end_dt)
@@ -71,6 +73,7 @@ async def student_dashboard(
         WHERE student_id = $1 {date_filter_trend}
         ORDER BY submitted_at DESC
     """, *params)
+
     date_filter_attempt_qa = date_filter_attempt.replace("attempt_date", "qa.submitted_at")
     attempts = await db.fetch(f"""
         SELECT 
@@ -92,26 +95,22 @@ async def student_dashboard(
         ORDER BY qa.submitted_at DESC
     """, *params)
 
-        # ✅ Process attempts FIRST
     formatted_attempts = []
-
     for a in attempts:
-            correct = a["correct_answers"] or 0
-            total = a["total_questions"] or 0
-
-            accuracy = round((correct / total) * 100) if total > 0 else 0
-
-            formatted_attempts.append({
-                "attempt_id": a["attempt_id"],
-                "test_title": a["test_title"],
-                "subject": a["subject"],
-                "type": a["type"],
-                "attempt_date": a["attempt_date"],
-                "time_spent_seconds": a["time_spent_seconds"],
-                "correct": correct,
-                "total_questions": total,
-                "accuracy": accuracy
-            })
+        correct = a["correct_answers"] or 0
+        total   = a["total_questions"] or 0
+        accuracy = round((correct / total) * 100) if total > 0 else 0
+        formatted_attempts.append({
+            "attempt_id":         a["attempt_id"],
+            "test_title":         a["test_title"],
+            "subject":            a["subject"],
+            "type":               a["type"],
+            "attempt_date":       a["attempt_date"],
+            "time_spent_seconds": a["time_spent_seconds"],
+            "correct":            correct,
+            "total_questions":    total,
+            "accuracy":           accuracy,
+        })
 
     rank_row = await db.fetchrow("""
         SELECT ranked.rank
@@ -124,7 +123,6 @@ async def student_dashboard(
         WHERE ranked.student_id = $1
     """, student_id)
 
-    # ── Streak: count consecutive days (up to today) with at least one attempt ──
     streak_row = await db.fetchrow("""
         WITH daily AS (
             SELECT DISTINCT DATE(attempt_date) AS day
@@ -151,16 +149,15 @@ async def student_dashboard(
         )
     """, student_id)
 
-    # ✅ THEN return
     return {
         "stats": {
             **(dict(stats) if stats else {"tests_taken": 0, "avg_score": 0, "best_score": 0}),
-            "rank":   int(rank_row["rank"])   if rank_row   else None,
+            "rank":   int(rank_row["rank"])     if rank_row   else None,
             "streak": int(streak_row["streak"]) if streak_row else 0,
         },
-        "subjects":  [dict(r) for r in subjects]  if subjects  else [],
-        "trend":     [dict(r) for r in trend]      if trend      else [],
-        "attempts":  formatted_attempts,
+        "subjects": [dict(r) for r in subjects]       if subjects else [],
+        "trend":    [dict(r) for r in trend]           if trend    else [],
+        "attempts": formatted_attempts,
     }
 
 @router.get("/student/{student_id}/dashboard")
@@ -484,9 +481,6 @@ async def get_attempt_details(
 ):
     student_id = str(current_user["id"])
 
-    # =========================
-    # 1. FETCH ATTEMPT SUMMARY
-    # =========================
     attempt = await db.fetchrow("""
         SELECT qa.id, qa.total_score, qa.time_spent_seconds, qa.tab_switch_count,
                q.title, c.name AS subject
@@ -499,75 +493,112 @@ async def get_attempt_details(
     if not attempt:
         raise HTTPException(status_code=404, detail="Attempt not found")
 
-    # =========================
-    # 2. FETCH QUESTIONS + ANSWERS
-    # =========================
     rows = await db.fetch("""
         SELECT 
             qb.id AS question_id,
             qb.question_text,
             qb.explanation,
-
             qo.id AS option_id,
             qo.option_text,
             qo.is_correct,
-
             sa.selected_option_id,
             sa.is_correct AS user_correct
-
         FROM student_answers sa
         JOIN question_bank qb ON qb.id = sa.question_id
         JOIN question_options qo ON qo.question_id = qb.id
-
         WHERE sa.attempt_id = $1
         ORDER BY qb.id
     """, str(attempt_id))
 
-    # =========================
-    # 3. TRANSFORM DATA
-    # =========================
     questions_map = {}
-
     for r in rows:
         qid = str(r["question_id"])
-
         if qid not in questions_map:
             questions_map[qid] = {
-                "question_text": r["question_text"],
-                "correct_answer": None,
+                "question_text":   r["question_text"],
+                "correct_answer":  None,
                 "selected_answer": str(r["selected_option_id"]) if r["selected_option_id"] else None,
-                "is_correct": r["user_correct"],
-                "explanation": r["explanation"],
-                "options": []
+                "is_correct":      r["user_correct"],
+                "explanation":     r["explanation"],
+                "options":         [],
             }
-
-        # identify correct option
         if r["is_correct"]:
             questions_map[qid]["correct_answer"] = str(r["option_id"])
-
         questions_map[qid]["options"].append({
-            "id": str(r["option_id"]),
-            "option_text": r["option_text"]
+            "id":          str(r["option_id"]),
+            "option_text": r["option_text"],
         })
 
     questions = list(questions_map.values())
 
-    # =========================
-    # 4. RETURN FINAL RESPONSE
-    # =========================
     return {
-        "score": float(attempt["total_score"] or 0),
+        "score":              float(attempt["total_score"] or 0),
         "time_spent_seconds": attempt["time_spent_seconds"] or 0,
-        "tabs": attempt["tab_switch_count"] or 0,
+        "tabs":               attempt["tab_switch_count"] or 0,
         "config": {
-            "title": attempt["title"],
+            "title":   attempt["title"],
             "subject": attempt["subject"],
-            "type": "teacher"
+            "type":    "teacher",
         },
         "questions": questions,
-        "correct": sum(1 for q in questions if q["is_correct"]),
-        "total": len(questions),
+        "correct":   sum(1 for q in questions if q["is_correct"]),
+        "total":     len(questions),
     }
+
+
+# ── Dashboard PDF (existing — full history) ────────────────────────────────────
+@router.post("/student/report")
+async def download_student_report(
+    body: StudentReportRequest,
+    current_user: dict = Depends(require_student),
+):
+    """
+    Called from the Dashboard page.
+    The frontend sends all subjects + attempts it already has in state.
+    """
+    BASE_DIR  = os.path.dirname(os.path.abspath(__file__))
+    LOGO_PATH = os.path.join(BASE_DIR, "..", "..", "static", "avatars", "logo.png")
+
+    pdf_bytes = build_student_report(
+        student={
+            "name":    body.student.name,
+            "usn":     body.student.usn,
+            "branch":  body.student.branch,
+            "section": body.student.section,
+        },
+        stats={
+            "tests_taken": body.stats.tests_taken,
+            "avg_score":   round(body.stats.avg_score, 2),
+            "best_score":  round(body.stats.best_score, 2),
+        },
+        subjects=[
+            {"name": s.name, "score": round(s.score, 2), "tests": s.tests}
+            for s in body.subjects
+        ],
+        attempts=[
+            {
+                "title":              a.title,
+                "subject":            a.subject,
+                "attempt_date":       a.attempt_date,
+                "score":              round(a.score, 2),
+                "time_spent_seconds": a.time_spent_seconds,
+            }
+            for a in body.attempts
+        ],
+        logo_path=LOGO_PATH,
+    )
+
+    safe_name = body.student.name.replace(" ", "_")
+    filename  = f"{safe_name}_performance_report.pdf"
+
+    return StreamingResponse(
+        io.BytesIO(pdf_bytes),
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+# ── Teacher / shared analytics endpoints ──────────────────────────────────────
 
 @router.get("/leaderboard", response_model=List[LeaderboardEntry])
 async def get_leaderboard(
@@ -583,7 +614,6 @@ async def get_leaderboard(
     db: asyncpg.Connection = Depends(get_db),
 ):
     user_id = current_user["id"]
-
     rows = await db.fetch("""
         SELECT student_id, full_name, avg_score, rank
         FROM public.course_leaderboard_view
@@ -592,22 +622,19 @@ async def get_leaderboard(
     """, course_id)
 
     result = []
-
     for r in rows:
-        name = r["full_name"] or ""
-
+        name     = r["full_name"] or ""
         initials = "".join([n[0].upper() for n in name.split()[:2]]) if name else "?"
-
         result.append({
-            "rank": r["rank"],
+            "rank":       r["rank"],
             "student_id": r["student_id"],
-            "name": name,
-            "score": round((r["avg_score"] or 0),2),
-            "isMe": r["student_id"] == user_id,
-            "initials": initials
+            "name":       name,
+            "score":      round((r["avg_score"] or 0), 2),
+            "isMe":       r["student_id"] == user_id,
+            "initials":   initials,
         })
-
     return result
+
 
 @router.get("/course/{course_id}/student-performance")
 async def teacher_student_performance(
@@ -615,25 +642,19 @@ async def teacher_student_performance(
     _: dict = Depends(require_teacher_up),
     db: asyncpg.Connection = Depends(get_db),
 ):
-    # Mapping your view 'teacher_student_performance'
-    # Columns: student_id, student (full_name), usn, course_id, attempts, average_score, highest_score, improvement
     rows = await db.fetch(
         """
         SELECT 
-            student_id, 
-            student AS full_name, 
-            usn, 
-            attempts, 
-            average_score, 
-            highest_score, 
-            improvement
+            student_id, student AS full_name, usn,
+            attempts, average_score, highest_score, improvement
         FROM public.teacher_student_performance
         WHERE course_id = $1
         ORDER BY average_score DESC
         """,
-        course_id
+        course_id,
     )
     return [dict(r) for r in rows]
+
 
 @router.get("/student/{student_id}/score-trend")
 async def score_trend(
@@ -641,34 +662,29 @@ async def score_trend(
     current_user: dict = Depends(get_current_user),
     db: asyncpg.Connection = Depends(get_db),
 ):
-
     if current_user["role"] == "student" and str(current_user["id"]) != student_id:
         raise HTTPException(status_code=403, detail="Cannot view another student's data")
 
     rows = await db.fetch(
         """
-        SELECT
-            q.title as quiz,
-            a.total_score,
-            a.submitted_at
+        SELECT q.title as quiz, a.total_score, a.submitted_at
         FROM public.quiz_attempts a
         JOIN public.quizzes q ON q.id = a.quiz_id
         WHERE a.student_id = $1
-        AND a.status IN ('submitted','evaluated')
+          AND a.status IN ('submitted','evaluated')
         ORDER BY a.submitted_at
         """,
         student_id,
     )
-
     return [dict(r) for r in rows]
+
+
 @router.get("/course/{course_id}/weak-students")
 async def weak_students(
     course_id: UUID,
     _: dict = Depends(require_teacher_up),
     db: asyncpg.Connection = Depends(get_db),
 ):
-    # Mapping your view 'weak_students'
-    # Columns: full_name, usn, course_id, avg_score
     rows = await db.fetch(
         """
         SELECT full_name, usn, avg_score
@@ -676,9 +692,10 @@ async def weak_students(
         WHERE course_id = $1
         ORDER BY avg_score ASC
         """,
-        course_id
+        course_id,
     )
     return [dict(r) for r in rows]
+
 
 @router.get("/course/{course_id}/top-performers")
 async def top_performers(
@@ -687,8 +704,6 @@ async def top_performers(
     _: dict = Depends(require_teacher_up),
     db: asyncpg.Connection = Depends(get_db),
 ):
-    # Mapping your view 'top_performers'
-    # Columns: full_name, usn, course_id, avg_score, highest_score
     rows = await db.fetch(
         """
         SELECT full_name, usn, avg_score, highest_score
@@ -697,9 +712,10 @@ async def top_performers(
         ORDER BY avg_score DESC
         LIMIT $2
         """,
-        course_id, limit
+        course_id, limit,
     )
     return [dict(r) for r in rows]
+
 
 @router.get("/course/{course_id}/class-summary")
 async def class_summary(
@@ -719,20 +735,17 @@ async def class_summary(
         return {}
 
     return {
-        "total_students": row["total_students"],
-        "total_tests": row["total_tests"],
-        "total_assignments": row["total_assignments"],
-
-        "class_average": float(row["avg_score"] or 0),
-        "pass_rate": float(row["pass_rate"] or 0),
-
-        "improvement_rate": float(row["improvement_rate"] or 0),
-        "consistency_score": float(row["consistency_score"] or 0),
-        "engagement_score": float(row["engagement_score"] or 0),
-
-        "on_track_percent": float(row["on_track_percent"] or 0),
+        "total_students":            row["total_students"],
+        "total_tests":               row["total_tests"],
+        "total_assignments":         row["total_assignments"],
+        "class_average":             float(row["avg_score"]            or 0),
+        "pass_rate":                 float(row["pass_rate"]            or 0),
+        "improvement_rate":          float(row["improvement_rate"]     or 0),
+        "consistency_score":         float(row["consistency_score"]    or 0),
+        "engagement_score":          float(row["engagement_score"]     or 0),
+        "on_track_percent":          float(row["on_track_percent"]     or 0),
         "needs_improvement_percent": float(row["needs_improvement_percent"] or 0),
-        "at_risk_percent": float(row["at_risk_percent"] or 0),
+        "at_risk_percent":           float(row["at_risk_percent"]      or 0),
     }
 
 
@@ -748,8 +761,8 @@ async def class_score_trend(
         WHERE course_id = $1
         ORDER BY date
     """, course_id)
-
     return [dict(r) for r in rows]
+
 
 @router.get("/course/{course_id}/assignment-trend")
 async def assignment_trend(
@@ -763,8 +776,8 @@ async def assignment_trend(
         WHERE course_id = $1
         ORDER BY date
     """, course_id)
-
     return [dict(r) for r in rows]
+
 
 @router.get("/course/{course_id}/comparison-trend")
 async def comparison_trend(
@@ -775,15 +788,14 @@ async def comparison_trend(
     rows = await db.fetch("""
         SELECT 
             t.date,
-            t.avg_score as test_avg,
-            a.avg_score as assignment_avg
+            t.avg_score  AS test_avg,
+            a.avg_score  AS assignment_avg
         FROM public.test_score_trend t
-        LEFT JOIN public.assignment_score_trend a 
-        ON t.date = a.date AND t.course_id = a.course_id
+        LEFT JOIN public.assignment_score_trend a
+               ON t.date = a.date AND t.course_id = a.course_id
         WHERE t.course_id = $1
         ORDER BY t.date
     """, course_id)
-
     return [dict(r) for r in rows]
 
 
@@ -800,22 +812,17 @@ async def risk_distribution(
         GROUP BY risk_level
     """, course_id)
 
-    result = {
-        "on_track": 0,
-        "needs_improvement": 0,
-        "at_risk": 0
-    }
-
+    result = {"on_track": 0, "needs_improvement": 0, "at_risk": 0}
     for r in rows:
         result[r["risk_level"]] = r["count"]
 
     total = sum(result.values()) or 1
-
     return {
-        "on_track_percent": round(result["on_track"] * 100 / total, 2),
-        "needs_improvement_percent": round(result["needs_improvement"] * 100 / total, 2),
-        "at_risk_percent": round(result["at_risk"] * 100 / total, 2),
+        "on_track_percent":          round(result["on_track"]           * 100 / total, 2),
+        "needs_improvement_percent": round(result["needs_improvement"]  * 100 / total, 2),
+        "at_risk_percent":           round(result["at_risk"]            * 100 / total, 2),
     }
+
 
 @router.get("/course/{course_id}/assignment-summary")
 async def assignment_summary(
@@ -825,18 +832,15 @@ async def assignment_summary(
 ):
     row = await db.fetchrow("""
         SELECT 
-            COUNT(*) as total_submissions,
-            ROUND(AVG(marks_obtained)::numeric, 2) as avg_score,
-            COUNT(DISTINCT student_id) as students_submitted
+            COUNT(*)                                AS total_submissions,
+            ROUND(AVG(marks_obtained)::numeric, 2) AS avg_score,
+            COUNT(DISTINCT student_id)             AS students_submitted
         FROM public.assignment_submissions s
         JOIN public.assignments a ON s.assignment_id = a.id
         WHERE a.course_id = $1
     """, course_id)
 
     return dict(row) if row else {}
-
-
-
 
 
 @router.get("/attempt/{attempt_id}/review")
@@ -1820,3 +1824,4 @@ async def get_quiz_summary(
         "insights":
             insights,
     }
+    return dict(row) if row else {}

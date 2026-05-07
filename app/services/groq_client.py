@@ -138,3 +138,78 @@ async def generate_ai_explanation(question_text: str, options: list[str], correc
     )
 
     return response.choices[0].message.content.strip()
+
+# ── Insights ──────────────────────────────────────────────────────────────────
+ 
+def build_prompt(stats, subjects, attempts) -> str:
+    recent = [
+        {"title": a.title, "subject": a.subject, "score": a.score, "date": a.attempt_date}
+        for a in attempts[:10]
+    ]
+    subject_summary = [
+        {"name": s.name, "avgScore": s.score, "tests": s.tests}
+        for s in subjects
+    ]
+ 
+    return f"""You are an academic performance analyst. Analyze this student's quiz dashboard data and return EXACTLY 5 key insights in JSON.
+ 
+Dashboard Data:
+- Total Tests Taken: {stats.tests_taken}
+- Average Score: {stats.avg_score}%
+- Best Score: {stats.best_score}%
+- Current Streak: {stats.streak} day(s)
+- Tests This Week: {stats.tests_this_week}
+ 
+Subject Performance:
+{json.dumps(subject_summary, indent=2)}
+ 
+Recent Attempts (last 10):
+{json.dumps(recent, indent=2)}
+ 
+Return ONLY a valid JSON array of exactly 5 objects. No markdown, no extra text.
+Each object must have:
+- "category": one of "strength", "weakness", "trend", "tip", "achievement"
+- "title": short punchy title (max 6 words)
+- "insight": 1-2 sentence actionable insight specific to the data
+- "metric": a short concrete stat or value (e.g. "92%", "+3 days", "2 subjects")
+ 
+Rules:
+- Be specific to the actual data, no generic advice
+- Mix categories — do not repeat the same category twice
+- If data is sparse, still provide useful tips
+- Metric must be a real number/value from the data"""
+ 
+ 
+async def generate_ai_insights(stats, subjects, attempts) -> list:
+    prompt = build_prompt(stats, subjects, attempts)
+ 
+    response = await client.chat.completions.create(
+        model="llama-3.1-8b-instant",
+        max_tokens=1024,
+        temperature=0.5,
+        messages=[
+            {
+                "role": "system",
+                "content": "You are a concise academic performance analyst. Always return ONLY valid JSON arrays. No markdown, no preamble.",
+            },
+            {"role": "user", "content": prompt},
+        ],
+    )
+ 
+    raw = response.choices[0].message.content.strip()
+ 
+    # Strip markdown fences if present
+    raw = re.sub(r"^```(?:json)?\s*", "", raw, flags=re.IGNORECASE)
+    raw = re.sub(r"\s*```$", "", raw)
+ 
+    # Extract JSON array robustly
+    match = re.search(r"\[.*\]", raw, re.DOTALL)
+    if match:
+        raw = match.group(0)
+ 
+    insights = json.loads(raw)
+ 
+    if not isinstance(insights, list):
+        raise ValueError("AI did not return a JSON array")
+ 
+    return insights[:5]

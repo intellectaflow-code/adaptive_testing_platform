@@ -1,5 +1,5 @@
 from pydantic import BaseModel, Field
-from typing import Optional, Literal
+from typing import Optional, List
 from datetime import datetime
 from uuid import UUID
 
@@ -52,3 +52,31 @@ class LeaderboardEntry(BaseModel):
     isMe: Optional[bool] = False
     initials: Optional[str] = None
 
+class ReportStudent(BaseModel):
+    name: str
+    usn: str
+    branch: str
+    section: str
+ 
+class ReportStats(BaseModel):
+    tests_taken: int
+    avg_score: float
+    best_score: float
+ 
+class ReportSubject(BaseModel):
+    name: str
+    score: float
+    tests: int
+ 
+class ReportAttempt(BaseModel):
+    title: str
+    subject: str
+    attempt_date: str          # ISO date string  "2025-04-28"
+    score: float
+    time_spent_seconds: int
+ 
+class StudentReportRequest(BaseModel):
+    student: ReportStudent
+    stats: ReportStats
+    subjects: List[ReportSubject]
+    attempts: List[ReportAttempt]

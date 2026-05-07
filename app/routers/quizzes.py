@@ -1,18 +1,22 @@
 import json
+from uuid import UUID
+import io
+import os
+from app.dependencies import get_current_user, require_teacher_up, require_student
 from fastapi import APIRouter, Depends, HTTPException, Query
 from typing import List, Optional
+from fastapi.responses import StreamingResponse, Response
 from datetime import datetime, timezone
 import asyncpg
-from pydantic import BaseModel
-from app.services.groq_client import generate_ai_quiz
-
+from app.services.report_generate import build_student_report, build_result_report
 from app.database import get_db
 from app.dependencies import get_current_user, require_teacher_up, require_admin_or_hod
 from app.schemas.quizzes import (
     QuizCreate, QuizUpdate, QuizOut,
-    QuizQuestionAdd, QuizPermissionCreate, QuizPermissionOut,QuizSubmission
+    QuizQuestionAdd, QuizPermissionCreate, QuizPermissionOut, QuizSubmission, ReportRequest
 )
 from app.services.activity import log_activity
+
 router = APIRouter(prefix="/quizzes", tags=["Quizzes"])
 
 
@@ -48,6 +52,129 @@ async def _enrich_quiz(db, row: dict) -> dict:
     q["question_count"] = count
     return q
 
+
+@router.get("/student/report/result/{attempt_id}")
+async def download_result_report(
+    attempt_id: UUID,
+    current_user: dict = Depends(require_student),
+    db: asyncpg.Connection = Depends(get_db),
+):
+    """
+    Downloads a single-attempt Results PDF (mirrors the Results page).
+    Calls build_result_report from report_generate.py.
+    """
+    student_id = str(current_user["id"])
+    BASE_DIR   = os.path.dirname(os.path.abspath(__file__))
+    LOGO_PATH  = os.path.join(BASE_DIR, "..", "..", "static", "avatars", "logo.png")
+
+    # ── 1. Verify attempt ownership ────────────────────────────────────────────
+    attempt = await db.fetchrow(
+        """
+        SELECT
+            qa.id,
+            qa.total_score,
+            qa.tab_switch_count,
+            qa.time_spent_seconds,
+            qa.submitted_at,
+            q.title          AS test_title,
+            q.total_marks,
+            c.name           AS subject,
+            c.code           AS topic
+        FROM public.quiz_attempts qa
+        JOIN public.quizzes  q ON q.id  = qa.quiz_id
+        JOIN public.courses  c ON c.id  = q.course_id
+        WHERE qa.id = $1 AND qa.student_id = $2
+        """,
+        str(attempt_id), student_id,
+    )
+    if not attempt:
+        raise HTTPException(status_code=404, detail="Attempt not found")
+
+    # ── 2. Student profile ─────────────────────────────────────────────────────
+    profile = await db.fetchrow(
+        """
+        SELECT p.full_name, p.usn, d.name AS branch, p.section
+        FROM public.profiles p
+        LEFT JOIN public.departments d ON d.id = p.department_id
+        WHERE p.id = $1
+        """,
+        student_id,
+    )
+    if not profile:
+        raise HTTPException(status_code=404, detail="Student profile not found")
+
+    # ── 3. Questions + student answers for this attempt ────────────────────────
+    answer_rows = await db.fetch(
+        """
+        SELECT
+            qb.id            AS question_id,
+            qb.question_text,
+            qb.explanation,
+            sa.selected_option_id::text AS selected_answer,
+            sa.is_correct,
+            -- correct option id
+            (SELECT id::text FROM public.question_options
+             WHERE question_id = qb.id AND is_correct = true
+             LIMIT 1)        AS correct_answer
+        FROM public.student_answers sa
+        JOIN public.question_bank qb ON qb.id = sa.question_id
+        WHERE sa.attempt_id = $1
+        ORDER BY qb.id
+        """,
+        str(attempt_id),
+    )
+
+    questions = []
+    for row in answer_rows:
+        opts = await db.fetch(
+            "SELECT id::text AS id, option_text FROM public.question_options WHERE question_id = $1",
+            str(row["question_id"]),
+        )
+        questions.append({
+            "question_text":    row["question_text"],
+            "options":          [dict(o) for o in opts],
+            "correct_answer":   row["correct_answer"],
+            "selected_answer":  row["selected_answer"],
+            "is_correct":       row["is_correct"],
+            "explanation":      row["explanation"] or "",
+        })
+
+    # ── 4. Score % ────────────────────────────────────────────────────────────
+    correct_count = sum(1 for q in questions if q["is_correct"])
+    total_count   = len(questions)
+    score_pct     = round(correct_count / total_count * 100) if total_count else 0
+
+    # ── 5. Build PDF ──────────────────────────────────────────────────────────
+    pdf_bytes = build_result_report(
+        student={
+            "name":    profile["full_name"] or "N/A",
+            "usn":     profile["usn"]       or "N/A",
+            "branch":  profile["branch"]    or "N/A",
+            "section": profile["section"]   or "N/A",
+        },
+        result={
+            "test_title":          attempt["test_title"],
+            "subject":             attempt["subject"],
+            "topic":               attempt["topic"],
+            "type":                "teacher",
+            "correct":             correct_count,
+            "total":               total_count,
+            "score_pct":           score_pct,
+            "time_spent_seconds":  attempt["time_spent_seconds"] or 0,
+            "tabs":                attempt["tab_switch_count"]   or 0,
+        },
+        questions=questions,
+        logo_path=LOGO_PATH,
+    )
+
+    safe_name = (profile["full_name"] or "student").replace(" ", "_")
+    filename  = f"{safe_name}_result_{str(attempt_id)[:8]}.pdf"
+
+    return StreamingResponse(
+        io.BytesIO(pdf_bytes),
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 @router.post("", response_model=QuizOut, status_code=201)
 async def create_quiz(
@@ -103,7 +230,6 @@ async def list_quizzes(
         where_parts.append(f"q.course_id = ${idx}"); params.append(course_id); idx += 1
 
     if current_user["role"] == "student":
-        # Students only see published quizzes for their enrolled courses
         where_parts.append("q.is_published = true")
         where_parts.append(
             f"EXISTS(SELECT 1 FROM public.enrollments e WHERE e.course_id = q.course_id AND e.student_id = ${idx})"
@@ -114,7 +240,6 @@ async def list_quizzes(
         where_parts.append(f"q.created_by = ${idx}")
         params.append(str(current_user["id"]))
         idx += 1
-
         if published_only:
             where_parts.append("q.is_published = true")
     else:
@@ -124,14 +249,14 @@ async def list_quizzes(
     where = " AND ".join(where_parts)
     rows = await db.fetch(
         f"""
-        SELECT 
+        SELECT
             q.*,
             c.name AS course_name,
             c.code AS course_code,
-            p.full_name AS teacher_name    
+            p.full_name AS teacher_name
         FROM public.quizzes q
         JOIN public.courses c ON q.course_id = c.id
-        LEFT JOIN public.profiles p ON p.id = q.created_by  
+        LEFT JOIN public.profiles p ON p.id = q.created_by
         WHERE {where}
         ORDER BY q.created_at DESC
         LIMIT ${idx} OFFSET ${idx+1}
@@ -257,7 +382,6 @@ async def get_quiz_questions(
     if current_user["role"] == "student":
         if not quiz["is_published"]:
             raise HTTPException(status_code=403, detail="Quiz not available")
-        # Check enrollment
         enrolled = await db.fetchval(
             "SELECT id FROM public.enrollments WHERE course_id = $1 AND student_id = $2",
             str(quiz["course_id"]), str(current_user["id"]),
@@ -281,7 +405,6 @@ async def get_quiz_questions(
         result = []
         for r in rows:
             q = dict(r)
-            # Fetch options without answers
             opts = await db.fetch(
                 "SELECT id, option_text, media_url FROM public.question_options WHERE question_id = $1",
                 str(q["id"]),
@@ -294,7 +417,6 @@ async def get_quiz_questions(
             result.append(q)
         return result
 
-    # Teacher / Admin sees full question data
     rows = await db.fetch(
         """
         SELECT qb.*, qq.question_order, qq.marks_override, qq.id as quiz_question_id
@@ -330,7 +452,6 @@ async def add_question_to_quiz(
     if quiz["is_published"]:
         raise HTTPException(status_code=409, detail="Unpublish quiz before editing questions")
 
-    # Auto order
     max_order = await db.fetchval(
         "SELECT COALESCE(MAX(question_order), 0) FROM public.quiz_questions WHERE quiz_id = $1", quiz_id
     )
@@ -343,7 +464,6 @@ async def add_question_to_quiz(
         raise HTTPException(status_code=409, detail="Question already in quiz")
     return dict(row)
 
-# Add this new endpoint (place it before or after /{quiz_id}/submit)
 
 @router.get("/{quiz_id}/my-attempts")
 async def get_my_attempts(
@@ -355,14 +475,11 @@ async def get_my_attempts(
     quiz = await _get_quiz_or_404(db, quiz_id)
     student_id = str(current_user["id"])
 
-    # Check for student-specific permission override
     perm = await db.fetchrow(
         "SELECT allowed_attempts FROM public.quiz_permissions WHERE quiz_id = $1 AND student_id = $2",
         quiz_id, student_id,
     )
-
     max_attempts = perm["allowed_attempts"] if perm and perm["allowed_attempts"] else quiz["max_attempts"]
-
     used_attempts = await db.fetchval(
         "SELECT COUNT(*) FROM public.quiz_attempts WHERE quiz_id = $1 AND student_id = $2",
         quiz_id, student_id,
@@ -375,6 +492,7 @@ async def get_my_attempts(
         "can_attempt": used_attempts < max_attempts,
     }
 
+
 @router.post("/{quiz_id}/submit", status_code=201)
 async def submit_quiz(
     quiz_id: str,
@@ -382,11 +500,9 @@ async def submit_quiz(
     current_user: dict = Depends(get_current_user),
     db: asyncpg.Connection = Depends(get_db),
 ):
-    # 1. Fetch quiz and student info
     quiz = await _get_quiz_or_404(db, quiz_id)
     student_id = str(current_user["id"])
 
-    # --- Enforce max_attempts ---
     perm = await db.fetchrow(
         "SELECT allowed_attempts FROM public.quiz_permissions WHERE quiz_id = $1 AND student_id = $2",
         quiz_id, student_id,
@@ -401,11 +517,9 @@ async def submit_quiz(
             status_code=403,
             detail=f"Attempt limit reached. You have used {used_attempts}/{max_attempts} attempts."
         )
-    # --- End enforcement ---
 
-    # 2. Get scoring data (correct options and marks)
     correct_options = await db.fetch("""
-        SELECT qo.question_id::text, qo.id::text as correct_option_id, 
+        SELECT qo.question_id::text, qo.id::text as correct_option_id,
                COALESCE(qq.marks_override, qb.marks) as marks
         FROM public.quiz_questions qq
         JOIN public.question_bank qb ON qb.id = qq.question_id
@@ -413,17 +527,16 @@ async def submit_quiz(
         WHERE qq.quiz_id = $1 AND qo.is_correct = true
     """, quiz_id)
 
-    scoring_map = {r["question_id"]: {"opt": r["correct_option_id"], "marks": r["marks"]} 
-                  for r in correct_options}
+    scoring_map = {r["question_id"]: {"opt": r["correct_option_id"], "marks": r["marks"]}
+                   for r in correct_options}
 
     total_score = 0.0
     processed_answers = []
 
-    # 3. Process each answer
     for ans in body.answers:
         q_id = str(ans.get("question_id"))
         selected_opt = str(ans.get("selected_answer")) if ans.get("selected_answer") else None
-        
+
         is_correct = False
         score_awarded = 0.0
 
@@ -432,7 +545,7 @@ async def submit_quiz(
                 is_correct = True
                 score_awarded = float(scoring_map[q_id]["marks"])
                 total_score += score_awarded
-        
+
         processed_answers.append({
             "q_id": q_id,
             "opt_id": selected_opt,
@@ -440,32 +553,33 @@ async def submit_quiz(
             "score": score_awarded
         })
 
-    # 4. Database Transaction to save Attempt and Individual Answers
     async with db.transaction():
-        # Get attempt number
         res_count = await db.fetchval(
             "SELECT COUNT(*) FROM public.quiz_attempts WHERE quiz_id = $1 AND student_id = $2",
             quiz_id, student_id
         )
         attempt_num = (res_count or 0) + 1
 
-        # Insert main attempt record
-        # Note: status is set to 'submitted' to satisfy the CHECK constraint
         attempt_row = await db.fetchrow(
-            """ INSERT INTO public.quiz_attempts 
-            (quiz_id, student_id, total_score, status, submitted_at, attempt_number, tab_switch_count, time_spent_seconds) 
-            VALUES ($1::uuid, $2::uuid, $3, 'submitted', now(), $4, $5, $6) RETURNING id """,
-              quiz_id, student_id, total_score, attempt_num, body.tab_switches, body.time_spent)
-
+            """
+            INSERT INTO public.quiz_attempts
+              (quiz_id, student_id, total_score, status, submitted_at, attempt_number, tab_switch_count, time_spent_seconds)
+            VALUES ($1::uuid, $2::uuid, $3, 'submitted', now(), $4, $5, $6)
+            RETURNING id
+            """,
+            quiz_id, student_id, total_score, attempt_num, body.tab_switches, body.time_spent,
+        )
         attempt_id = attempt_row["id"]
 
-            # Insert detailed answers into student_answers table
         for pa in processed_answers:
-            await db.execute("""
-                INSERT INTO public.student_answers 
-                    (attempt_id, question_id, selected_option_id, is_correct, score_awarded)
+            await db.execute(
+                """
+                INSERT INTO public.student_answers
+                  (attempt_id, question_id, selected_option_id, is_correct, score_awarded)
                 VALUES ($1, $2::uuid, $3::uuid, $4, $5)
-            """, attempt_id, pa["q_id"], pa["opt_id"], pa["is_correct"], pa["score"])
+                """,
+                attempt_id, pa["q_id"], pa["opt_id"], pa["is_correct"], pa["score"],
+            )
 
     await log_activity(db, student_id, "submit_teacher_quiz", {"quiz_id": quiz_id, "score": total_score})
 
@@ -473,9 +587,9 @@ async def submit_quiz(
         "status": "success",
         "attempt_id": str(attempt_id),
         "score": total_score,
-        "total_possible": float(quiz["total_marks"] or 0)
-        
+        "total_possible": float(quiz["total_marks"] or 0),
     }
+
 
 @router.delete("/{quiz_id}/questions/{question_id}", status_code=204)
 async def remove_question_from_quiz(
@@ -511,10 +625,10 @@ async def grant_permission(
         VALUES ($1,$2,$3,$4,$5,$6)
         ON CONFLICT (quiz_id, student_id) DO UPDATE SET
           extra_time_minutes = EXCLUDED.extra_time_minutes,
-          allowed_attempts = EXCLUDED.allowed_attempts,
-          override_end_time = EXCLUDED.override_end_time,
-          granted_by = EXCLUDED.granted_by,
-          granted_at = now()
+          allowed_attempts   = EXCLUDED.allowed_attempts,
+          override_end_time  = EXCLUDED.override_end_time,
+          granted_by         = EXCLUDED.granted_by,
+          granted_at         = now()
         RETURNING *
         """,
         quiz_id, str(body.student_id), body.extra_time_minutes,
@@ -572,4 +686,3 @@ async def get_quiz_results(
         quiz_id,
     )
     return [dict(r) for r in rows]
-

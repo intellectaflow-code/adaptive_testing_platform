@@ -11,7 +11,7 @@ from app.config import get_settings
 from app.database import create_pool, close_pool
 from app.routers import (
     departments, profiles, courses, questions, quizzes,
-    attempts, analytics, announcements, messages, admin, auth, teachers_dashboard, syllabus_to_quiz, settings,ai_quiz, assignments
+    attempts, analytics, announcements, messages, admin, auth, teachers_dashboard, syllabus_to_quiz, settings, ai_quiz, assignments, insights
 )
 
 
@@ -114,6 +114,7 @@ app.include_router(settings.router,             prefix=PREFIX)
 app.include_router(ai_quiz.router,              prefix=PREFIX)
 app.include_router(departments.router,          prefix=PREFIX)
 app.include_router(assignments.router,          prefix=PREFIX)
+app.include_router(insights.router, prefix=PREFIX)
 
 
 # ── Health / root ─────────────────────────────────────────────────────────────

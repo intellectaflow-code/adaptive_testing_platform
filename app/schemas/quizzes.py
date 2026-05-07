@@ -1,5 +1,5 @@
 from pydantic import BaseModel, Field, model_validator
-from typing import Optional, List
+from typing import Optional, List, Any
 from datetime import datetime
 from uuid import UUID
 
@@ -174,3 +174,9 @@ class DescriptiveSubmission(BaseModel):
     answers: List[DescriptiveAnswer]
     tab_switches: int = 0
     time_spent: int = 0
+
+class ReportRequest(BaseModel):
+    student:  dict[str, Any] = Field(default_factory=dict)
+    stats:    dict[str, Any] = Field(default_factory=dict)
+    subjects: list[dict[str, Any]] = Field(default_factory=list)
+    attempts: list[dict[str, Any]] = Field(default_factory=list)
