@@ -12,6 +12,7 @@ from datetime import date, datetime, time, timezone
 
 from app.database import get_db
 from app.dependencies import get_current_user, require_roles, require_teacher_up, require_student
+from app.services.analytics_pdf import generate_class_analytics_pdf
 from app.services.report_generate import build_student_report
 from app.schemas.analytics import (
     StudentPerformanceOut, LeaderboardEntry, StudentReportRequest, 
@@ -1825,7 +1826,6 @@ async def get_quiz_summary(
             insights,
     }
 
-
 @router.get("/class-summary/{course_id}")
 async def get_class_summary(
     course_id: str,
@@ -1836,9 +1836,15 @@ async def get_class_summary(
     # =====================================================
     # COURSE
     # =====================================================
+
     course = await db.fetchrow(
         """
-        SELECT id, name, code, semester, branch
+        SELECT
+            id,
+            name,
+            code,
+            semester,
+            branch
         FROM public.courses
         WHERE id = $1
           AND is_deleted = false
@@ -1852,6 +1858,7 @@ async def get_class_summary(
     # =====================================================
     # TOTAL STUDENTS
     # =====================================================
+
     total_students = await db.fetchval(
         """
         SELECT COUNT(*)
@@ -1864,6 +1871,7 @@ async def get_class_summary(
     # =====================================================
     # TOTAL TESTS
     # =====================================================
+
     total_tests = await db.fetchval(
         """
         SELECT COUNT(*)
@@ -1877,6 +1885,7 @@ async def get_class_summary(
     # =====================================================
     # TOTAL ASSIGNMENTS
     # =====================================================
+
     total_assignments = await db.fetchval(
         """
         SELECT COUNT(*)
@@ -1887,71 +1896,193 @@ async def get_class_summary(
     ) or 0
 
     # =====================================================
-    # QUIZ SCORES
+    # BEST QUIZ ATTEMPTS PER STUDENT
     # =====================================================
-    quiz_scores = await db.fetch(
+
+    student_performance = await db.fetch(
         """
+        WITH best_attempts AS (
+                SELECT
+    qa.student_id,
+    qa.quiz_id,
+
+    MAX(
+        (
+            qa.total_score::float
+            / NULLIF(q.total_marks, 0)
+        ) * 100
+    ) AS best_score
+
+            FROM public.quiz_attempts qa
+
+            JOIN public.quizzes q
+                ON q.id = qa.quiz_id
+
+            WHERE q.course_id = $1
+              AND qa.status IN ('submitted', 'evaluated')
+
+            GROUP BY
+                qa.student_id,
+                qa.quiz_id
+        )
+
         SELECT
-            qa.total_score,
-            qa.started_at,
-            q.title
-        FROM public.quiz_attempts qa
-        JOIN public.quizzes q
-            ON q.id = qa.quiz_id
-        WHERE q.course_id = $1
-          AND qa.status IN ('submitted', 'evaluated')
-        ORDER BY qa.started_at
+            p.id,
+            p.full_name,
+
+            ROUND(
+                AVG(ba.best_score)::numeric,
+                2
+            ) AS avg_score,
+
+            COUNT(DISTINCT ba.quiz_id)
+                AS quizzes_attempted
+
+        FROM public.profiles p
+
+        JOIN public.enrollments e
+            ON e.student_id = p.id
+
+        LEFT JOIN best_attempts ba
+            ON ba.student_id = p.id
+
+        WHERE e.course_id = $1
+
+        GROUP BY
+            p.id,
+            p.full_name
+
+        ORDER BY avg_score DESC
         """,
         course_id,
     )
 
-    scores = [
-        float(r["total_score"] or 0)
-        for r in quiz_scores
+    student_averages = [
+        float(s["avg_score"])
+        for s in student_performance
+        if s["avg_score"] is not None
     ]
 
-    overall_avg_score = (
-        round(sum(scores) / len(scores), 2)
-        if scores else 0
-    )
+    # =====================================================
+    # OVERALL COURSE AVERAGE
+    # =====================================================
+
+    overall_avg_score = round(
+        sum(student_averages) / len(student_averages),
+        2
+    ) if student_averages else 0
 
     # =====================================================
     # PASS RATE
     # =====================================================
-    pass_count = len([
-        s for s in scores
+
+    passed_students = len([
+        s for s in student_averages
         if s >= 50
     ])
 
-    fail_count = len(scores) - pass_count
+    fail_count = total_students - passed_students
 
-    pass_rate = (
-        round((pass_count / len(scores)) * 100, 2)
-        if scores else 0
+    pass_rate = round(
+        (passed_students / total_students) * 100,
+        2
+    ) if total_students else 0
+
+    # =====================================================
+    # TEST TREND
+    # =====================================================
+
+    test_trend = await db.fetch(
+        """
+        WITH best_attempts AS (
+
+            SELECT
+                qa.student_id,
+                qa.quiz_id,
+
+                MAX(
+                    (
+                        qa.total_score::float
+                        / NULLIF(q.total_marks, 0)
+                    ) * 100
+                ) AS best_score
+
+            FROM public.quiz_attempts qa
+
+            JOIN public.quizzes q
+                ON q.id = qa.quiz_id
+
+            WHERE qa.status IN ('submitted', 'evaluated')
+
+            GROUP BY
+                qa.student_id,
+                qa.quiz_id
+        )
+
+        SELECT
+            q.id,
+            q.title,
+
+            ROUND(
+                AVG(ba.best_score)::numeric,
+                2
+            ) AS avg_score
+
+        FROM public.quizzes q
+
+        LEFT JOIN best_attempts ba
+            ON ba.quiz_id = q.id
+
+        WHERE q.course_id = $1
+        AND q.is_deleted = false
+
+        GROUP BY
+            q.id,
+            q.title
+
+        ORDER BY q.created_at
+        """,
+        course_id,
     )
 
     # =====================================================
     # IMPROVEMENT RATE
     # =====================================================
+
     improvement_rate = 0
 
-    if len(scores) >= 2:
-        first = scores[0]
-        latest = scores[-1]
+    if len(test_trend) >= 2:
 
-        if first > 0:
+        first_avg = float(
+            test_trend[0]["avg_score"] or 0
+        )
+
+        latest_avg = float(
+            test_trend[-1]["avg_score"] or 0
+        )
+
+        if first_avg > 0:
+
             improvement_rate = round(
-                ((latest - first) / first) * 100,
+                (
+                    (latest_avg - first_avg)
+                    / first_avg
+                ) * 100,
                 2
             )
 
     # =====================================================
     # CONSISTENCY SCORE
     # =====================================================
+
     consistency_score = "Medium"
 
-    if scores:
-        variance = max(scores) - min(scores)
+    if student_averages:
+
+        variance = (
+            max(student_averages)
+            - min(student_averages)
+        )
 
         if variance <= 15:
             consistency_score = "High"
@@ -1962,101 +2093,104 @@ async def get_class_summary(
     # =====================================================
     # ENGAGEMENT
     # =====================================================
-    engagement = "High"
 
-    total_attempts = len(scores)
+    total_best_attempts = await db.fetchval(
+        """
+        SELECT COUNT(*)
 
-    avg_attempts_per_student = (
-        total_attempts / total_students
-        if total_students else 0
+        FROM (
+
+            SELECT
+                qa.student_id,
+                qa.quiz_id
+
+            FROM public.quiz_attempts qa
+
+            JOIN public.quizzes q
+                ON q.id = qa.quiz_id
+
+            WHERE q.course_id = $1
+              AND qa.status IN ('submitted', 'evaluated')
+
+            GROUP BY
+                qa.student_id,
+                qa.quiz_id
+
+        ) x
+        """,
+        course_id,
+    ) or 0
+
+    possible_attempts = (
+        total_students * total_tests
     )
 
-    if avg_attempts_per_student < 2:
+    engagement_percent = round(
+        (
+            total_best_attempts
+            / possible_attempts
+        ) * 100,
+        2
+    ) if possible_attempts else 0
+
+    engagement = "High"
+
+    if engagement_percent < 50:
         engagement = "Low"
 
-    elif avg_attempts_per_student < 4:
+    elif engagement_percent < 80:
         engagement = "Medium"
 
     # =====================================================
     # TOP STUDENTS
     # =====================================================
-    top_students = await db.fetch(
-        """
-        SELECT
-            p.id,
-            p.full_name,
-            ROUND(AVG(qa.total_score)::numeric, 2) AS avg_score
-        FROM public.quiz_attempts qa
-        JOIN public.quizzes q
-            ON q.id = qa.quiz_id
-        JOIN public.profiles p
-            ON p.id = qa.student_id
-        WHERE q.course_id = $1
-          AND qa.status IN ('submitted', 'evaluated')
-        GROUP BY p.id, p.full_name
-        ORDER BY avg_score DESC
-        LIMIT 5
-        """,
-        course_id,
-    )
+
+    top_students = sorted(
+        student_performance,
+        key=lambda x: x["avg_score"] or 0,
+        reverse=True
+    )[:5]
 
     # =====================================================
     # WEAK STUDENTS
     # =====================================================
-    weak_students = await db.fetch(
-        """
-        SELECT
-            p.id,
-            p.full_name,
-            ROUND(AVG(qa.total_score)::numeric, 2) AS avg_score
-        FROM public.quiz_attempts qa
-        JOIN public.quizzes q
-            ON q.id = qa.quiz_id
-        JOIN public.profiles p
-            ON p.id = qa.student_id
-        WHERE q.course_id = $1
-          AND qa.status IN ('submitted', 'evaluated')
-        GROUP BY p.id, p.full_name
-        ORDER BY avg_score ASC
-        LIMIT 5
-        """,
-        course_id,
-    )
 
-    # =====================================================
-    # TEST TREND
-    # =====================================================
-    test_trend = await db.fetch(
-        """
-        SELECT
-            q.title,
-            ROUND(AVG(qa.total_score)::numeric, 2) AS avg_score
-        FROM public.quiz_attempts qa
-        JOIN public.quizzes q
-            ON q.id = qa.quiz_id
-        WHERE q.course_id = $1
-          AND qa.status IN ('submitted', 'evaluated')
-        GROUP BY q.id, q.title
-        ORDER BY MIN(qa.started_at)
-        """,
-        course_id,
-    )
+    weak_students = sorted(
+        [
+            s for s in student_performance
+            if s["avg_score"] is not None
+            and s["avg_score"] < 50
+        ],
+        key=lambda x: x["avg_score"]
+    )[:5]
 
     # =====================================================
     # ASSIGNMENT TREND
     # =====================================================
+
     assignment_trend = await db.fetch(
         """
         SELECT
             ta.title,
-            ROUND(AVG(sas.total_score)::numeric, 2) AS avg_score
+
+            ROUND(
+                AVG(sas.total_score)::numeric,
+                2
+            ) AS avg_score
+
         FROM public.student_assignment_submissions sas
+
         JOIN public.teacher_assignments ta
             ON ta.id = sas.assignment_id
+
         WHERE ta.course_id = $1
           AND sas.status = 'evaluated'
-        GROUP BY ta.id, ta.title
-        ORDER BY MIN(sas.created_at)
+
+        GROUP BY
+            ta.id,
+            ta.title
+
+        ORDER BY ta.created_at
         """,
         course_id,
     )
@@ -2064,13 +2198,20 @@ async def get_class_summary(
     # =====================================================
     # ASSIGNMENT AVERAGE
     # =====================================================
+
     assignment_average = await db.fetchval(
         """
         SELECT
-            ROUND(AVG(sas.total_score)::numeric, 2)
+            ROUND(
+                AVG(sas.total_score)::numeric,
+                2
+            )
+
         FROM public.student_assignment_submissions sas
+
         JOIN public.teacher_assignments ta
             ON ta.id = sas.assignment_id
+
         WHERE ta.course_id = $1
           AND sas.status = 'evaluated'
         """,
@@ -2080,12 +2221,16 @@ async def get_class_summary(
     # =====================================================
     # ASSIGNMENT SUBMISSION RATE
     # =====================================================
+
     submitted_count = await db.fetchval(
         """
         SELECT COUNT(*)
+
         FROM public.student_assignment_submissions sas
+
         JOIN public.teacher_assignments ta
             ON ta.id = sas.assignment_id
+
         WHERE ta.course_id = $1
           AND sas.status IN ('submitted', 'evaluated')
         """,
@@ -2096,35 +2241,37 @@ async def get_class_summary(
         total_students * total_assignments
     )
 
-    submission_rate = (
-        round(
-            (submitted_count / total_possible_submissions) * 100,
-            2
-        )
-        if total_possible_submissions else 0
-    )
+    submission_rate = round(
+        (
+            submitted_count
+            / total_possible_submissions
+        ) * 100,
+        2
+    ) if total_possible_submissions else 0
 
     # =====================================================
-    # AT-RISK DISTRIBUTION
+    # STUDENT DISTRIBUTION
     # =====================================================
+
     on_track = len([
-        s for s in scores
-        if s >= 70
+        s for s in student_averages
+        if s >= 75
     ])
 
     needs_improvement = len([
-        s for s in scores
-        if 40 <= s < 70
+        s for s in student_averages
+        if 50 <= s < 75
     ])
 
     at_risk = len([
-        s for s in scores
-        if s < 40
+        s for s in student_averages
+        if s < 50
     ])
 
     # =====================================================
     # RECENT ATTEMPTS
     # =====================================================
+
     recent_attempts = await db.fetch(
         """
         SELECT
@@ -2133,13 +2280,19 @@ async def get_class_summary(
             q.title,
             qa.total_score,
             qa.started_at
+
         FROM public.quiz_attempts qa
+
         JOIN public.profiles p
             ON p.id = qa.student_id
+
         JOIN public.quizzes q
             ON q.id = qa.quiz_id
+
         WHERE q.course_id = $1
+
         ORDER BY qa.started_at DESC
+
         LIMIT 20
         """,
         course_id,
@@ -2148,28 +2301,54 @@ async def get_class_summary(
     # =====================================================
     # RESPONSE
     # =====================================================
+
     return {
 
         "course": dict(course),
 
         "stats": {
-            "overall_average_score": overall_avg_score,
-            "improvement_rate": improvement_rate,
-            "consistency_score": consistency_score,
-            "engagement": engagement,
-            "total_students": total_students,
-            "total_tests": total_tests,
-            "total_assignments": total_assignments,
-            "pass_rate": pass_rate,
-            "fail_count": fail_count,
-            "assignment_average": assignment_average,
-            "assignment_submission_rate": submission_rate,
+
+            "overall_average_score":
+                overall_avg_score,
+
+            "improvement_rate":
+                improvement_rate,
+
+            "consistency_score":
+                consistency_score,
+
+            "engagement":
+                engagement,
+
+            "engagement_percent":
+                engagement_percent,
+
+            "total_students":
+                total_students,
+
+            "total_tests":
+                total_tests,
+
+            "total_assignments":
+                total_assignments,
+
+            "pass_rate":
+                pass_rate,
+
+            "fail_count":
+                fail_count,
+
+            "assignment_average":
+                assignment_average,
+
+            "assignment_submission_rate":
+                submission_rate,
         },
 
         "distribution": {
-            "on_track": on_track,
-            "needs_improvement": needs_improvement,
-            "at_risk": at_risk,
+            "on_track": round((on_track / total_students) * 100, 2),
+            "needs_improvement": round((needs_improvement / total_students) * 100, 2),
+            "at_risk": round((at_risk / total_students) * 100, 2),
         },
 
         "top_students": [
@@ -2198,3 +2377,20 @@ async def get_class_summary(
         ],
     }
 
+
+@router.get("/class-summary/{course_id}/pdf")
+async def download_class_summary_pdf(
+    course_id: str,
+    current_user: dict = Depends(require_teacher_up),
+    db: asyncpg.Connection = Depends(get_db),
+):
+
+    analytics = await get_class_summary(
+        course_id,
+        current_user,
+        db
+    )
+
+    return await generate_class_analytics_pdf(
+        analytics
+    )
