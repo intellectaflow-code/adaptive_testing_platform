@@ -20,9 +20,6 @@ from app.services.descriptive_ai import auto_evaluate_assignment
 
 router = APIRouter(prefix="/attempts", tags=["Quiz Attempts"])
 
-
-
-
 CHEATING_TAB_SWITCH_THRESHOLD = 3
 CHEATING_FULLSCREEN_THRESHOLD = 3
 
@@ -67,7 +64,7 @@ async def start_attempt(
         raise HTTPException(status_code=403, detail="Not enrolled in this course")
 
     # =========================
-    # 🔥 TIMEZONE FIX START
+    # TIMEZONE FIX START
     # =========================
     now = datetime.now(ZoneInfo("Asia/Kolkata"))
     print("NOW (IST) =========================", now)
@@ -79,7 +76,7 @@ async def start_attempt(
     if start_time and start_time > now:
         raise HTTPException(status_code=403, detail="Quiz has not started yet !")
     # =========================
-    # 🔥 TIMEZONE FIX END
+    # TIMEZONE FIX END
     # =========================
 
     # Check for special permissions

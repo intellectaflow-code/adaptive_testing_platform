@@ -1,6 +1,7 @@
 import io
 import math
 import os
+import re
 from datetime import datetime
 from reportlab.lib.pagesizes import A4
 from reportlab.lib import colors
@@ -29,7 +30,7 @@ RED_BG     = HexColor("#FEF2F2")
 RED_BOR    = HexColor("#FCA5A5")
 SURFACE2   = HexColor("#F1F5F9")
 BORDER2    = HexColor("#E2E8F0")
-
+SLATE_BADGE = HexColor("#CBD5E1")
 YOU_COLOR  = HexColor("#4C3BCF")
 AVG_COLOR  = HexColor("#a78bfa")
 
@@ -38,6 +39,12 @@ SUBJECT_COLORS = [
     HexColor("#9B8FEE"), HexColor("#3D2EBF"), HexColor("#6A5ACD"),
 ]
 LETTER_LABELS = "ABCDEFGHIJ"
+
+# Question card layout constants
+_PAD     = 12    # left/right inner padding
+_BADGE_R = 9     # status badge circle radius
+_Q_PRE_W = 32    # width reserved for "Q1." label on the left
+_BADGE_W = _BADGE_R * 2 + 10  # width reserved for badge on the right (28 px)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -129,8 +136,31 @@ def _draw_student_info_card(c, margin, top_y, W, student: dict) -> float:
     return top_y - card_h - 12
 
 
+def _wrap_text(c, text: str, x: float, y: float, max_w: float,
+               font: str, size: float, color, line_h: float) -> float:
+    """Draw wrapped text. Returns y below last line."""
+    c.setFont(font, size)
+    c.setFillColor(color)
+    words  = text.split()
+    line   = ""
+    cur_y  = y
+    for word in words:
+        test = (line + " " + word).strip()
+        if c.stringWidth(test, font, size) <= max_w:
+            line = test
+        else:
+            if line:
+                c.drawString(x, cur_y, line)
+                cur_y -= line_h
+            line = word
+    if line:
+        c.drawString(x, cur_y, line)
+        cur_y -= line_h
+    return cur_y
+
+
 # ══════════════════════════════════════════════════════════════════════════════
-# ① build_student_report  (original analytics / progress dashboard PDF)
+# ① build_student_report  (dashboard / analytics PDF)
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _pie(c, cx, cy, r, slices):
@@ -270,7 +300,7 @@ def build_student_report(
     attempts:  list,
     logo_path: str = None,
 ) -> bytes:
-    """Original analytics / progress dashboard PDF (unchanged)."""
+    """Analytics / progress dashboard PDF."""
     W, H   = A4
     margin = 28
     buf    = io.BytesIO()
@@ -278,18 +308,18 @@ def build_student_report(
 
     c.setFillColor(BG)
     c.rect(0, 0, W, H, fill=1, stroke=0)
-
     _draw_shared_header(c, W, H, logo_path)
 
+    # (Header is drawn twice in original — kept as-is for compatibility)
     c.setFillColor(WHITE)
     c.rect(0, H - 70, W, 70, fill=1, stroke=0)
     c.setStrokeColor(HexColor("#E0E0E0"))
     c.setLineWidth(1)
     c.line(0, H - 70, W, H - 70)
 
-    logo_size = 44
-    logo_x    = 18
-    logo_y    = H - 57
+    logo_size  = 44
+    logo_x     = 18
+    logo_y     = H - 57
     logo_drawn = False
     if logo_path and os.path.exists(logo_path):
         try:
@@ -445,46 +475,19 @@ def build_student_report(
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# ② build_result_report  (NEW — mirrors the Results page layout)
+# ② build_result_report  (single-attempt results PDF)
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _score_color(pct: float):
-    if pct >= 75:
-        return GREEN
-    if pct >= 60:
-        return AMBER
+    if pct >= 75: return GREEN
+    if pct >= 60: return AMBER
     return RED
 
 
 def _score_label(pct: float) -> str:
-    if pct >= 75:
-        return "Well done!"
-    if pct >= 60:
-        return "Good effort"
+    if pct >= 75: return "Well done!"
+    if pct >= 60: return "Good effort"
     return "Keep practising"
-
-
-def _wrap_text(c, text: str, x: float, y: float, max_w: float,
-               font: str, size: float, color, line_h: float) -> float:
-    """Draw wrapped text. Returns y below last line (y decreases)."""
-    c.setFont(font, size)
-    c.setFillColor(color)
-    words  = text.split()
-    line   = ""
-    cur_y  = y
-    for word in words:
-        test = (line + " " + word).strip()
-        if c.stringWidth(test, font, size) <= max_w:
-            line = test
-        else:
-            if line:
-                c.drawString(x, cur_y, line)
-                cur_y -= line_h
-            line = word
-    if line:
-        c.drawString(x, cur_y, line)
-        cur_y -= line_h
-    return cur_y
 
 
 def _draw_score_summary_card(c, margin, top_y, W, result: dict) -> float:
@@ -537,15 +540,15 @@ def _draw_score_summary_card(c, margin, top_y, W, result: dict) -> float:
     if tabs > 0:
         stats.append((str(tabs), "Tab switches", RED))
 
-    px = title_x
+    stat_x = title_x
     for val, lbl, col in stats:
         c.setFont("Helvetica-Bold", 12)
         c.setFillColor(col)
-        c.drawString(px, stat_y, val)
+        c.drawString(stat_x, stat_y, val)
         c.setFont("Helvetica", 9)
         c.setFillColor(TEXT_LIGHT)
-        c.drawString(px, stat_y - 13, lbl)
-        px += 72
+        c.drawString(stat_x, stat_y - 13, lbl)
+        stat_x += 72
 
     # Insight strip
     if has_ins:
@@ -555,18 +558,14 @@ def _draw_score_summary_card(c, margin, top_y, W, result: dict) -> float:
         ins_h = 42
         _rrect(c, ins_x, ins_y, ins_w, ins_h, r=6,
                fill=AMBER_BG, stroke_color=HexColor("#FDE68A"), sw=0.7)
-
         c.setFont("Helvetica-Bold", 9)
         c.setFillColor(AMBER)
         c.drawString(ins_x + 8, ins_y + ins_h - 14,
                      "\u26a1 " + (result.get("insight_type") or "INSIGHT").upper())
-
         c.setFont("Helvetica-Bold", 9)
         c.setFillColor(TEXT_DARK)
-        c.drawString(ins_x + 8, ins_y + ins_h - 27,
-                     result.get("insight_title", ""))
-
-        body = result.get("insight_body", "")
+        c.drawString(ins_x + 8, ins_y + ins_h - 27, result.get("insight_title", ""))
+        body   = result.get("insight_body", "")
         max_bw = ins_w - 18
         c.setFont("Helvetica", 8)
         while body and c.stringWidth(body, "Helvetica", 8) > max_bw:
@@ -578,14 +577,26 @@ def _draw_score_summary_card(c, margin, top_y, W, result: dict) -> float:
 
 
 def _question_block_height(c, q: dict, full_w: float) -> float:
-    """Estimate the pixel height needed for one question card."""
-    PAD      = 12
-    tmw      = full_w - PAD * 2 - 26
-    h        = 26  # top padding + badge row
-    # question text
-    words    = q.get("question_text", "").split()
-    line     = ""
-    lines    = 0
+    """
+    Estimate pixel height for one question card.
+
+    Layout (top → bottom):
+        _PAD                     top padding
+        question text rows       (wraps between Q-label and badge)
+        Not Attempted tag        (if applicable, +16 px)
+        gap 12 px
+        options  26 × ceil(n/2)
+        gap  8 px
+        explanation              (if present)
+        _PAD                     bottom padding
+    """
+    tmw = full_w - _PAD * 2 - _Q_PRE_W - _BADGE_W
+
+    h = _PAD + 4   # top padding
+
+    # Question text wrap
+    words = q.get("question_text", "").split()
+    line, lines = "", 0
     for w in words:
         test = (line + " " + w).strip()
         if c.stringWidth(test, "Helvetica", 10) <= tmw:
@@ -594,80 +605,97 @@ def _question_block_height(c, q: dict, full_w: float) -> float:
             lines += 1
             line = w
     lines += 1
-    h += lines * 14 + 8
-    # options
-    opts  = q.get("options", [])
-    rows  = math.ceil(len(opts) / 2)
-    h    += rows * 26 + 8
-    # explanation
+    h += max(lines, 1) * 14
+
+    if q.get("selected_answer") is None:
+        h += 16
+
+    h += 12  # gap before options
+
+    rows = math.ceil(len(q.get("options", [])) / 2)
+    h += rows * 26 + 8
+
     if q.get("explanation"):
-        exp   = q["explanation"]
-        emax  = full_w - 28
+        exp    = q["explanation"]
+        emax   = full_w - _PAD * 2 - 16
         words2 = exp.split()
-        l2     = ""
-        el     = 0
+        l2, el = "", 0
         for w in words2:
             t2 = (l2 + " " + w).strip()
             if c.stringWidth(t2, "Helvetica", 8.5) <= emax:
                 l2 = t2
             else:
                 el += 1
-                l2 = w
+                l2  = w
         el += 1
-        h += el * 12 + 36
-    return h + 16
+        h += el * 12 + 38
+
+    h += _PAD  # bottom padding
+    return h
 
 
 def _draw_question_block(c, margin, top_y, full_w, q: dict, qi: int) -> float:
-    """Draw one question card. Returns y below it."""
-    PAD      = 12
-    tmw      = full_w - PAD * 2 - 26
-    block_h  = _question_block_height(c, q, full_w)
+    """
+    Draw one question card. Returns y-coordinate below the card.
+
+    ✓ / ✗ / ? badge → RIGHT end of the header row.
+    Q-number + question text → LEFT, wrapping before the badge.
+    """
+    block_h = _question_block_height(c, q, full_w)
 
     user_ans   = q.get("selected_answer")
     not_att    = user_ans is None
     is_correct = q.get("is_correct", False)
     left_col   = GREEN if is_correct else (AMBER if not_att else RED)
 
-    _rrect(c, margin, top_y - block_h, full_w, block_h, r=8,
-           fill=WHITE, stroke_color=BORDER2)
-    # Left accent bar
+    # Card background + left accent bar
+    _rrect(c, margin, top_y - block_h, full_w, block_h,
+           r=8, fill=WHITE, stroke_color=BORDER2)
     c.setFillColor(left_col)
     c.roundRect(margin, top_y - block_h, 4, block_h, 2, fill=1, stroke=0)
 
-    # Status badge (circle)
-    bx = margin + PAD + 2
-    by = top_y - PAD - 18
-    br = 9
-    c.setFillColor(GREEN if is_correct else (AMBER if not_att else RED))
-    c.circle(bx + br, by + br, br, fill=1, stroke=0)
+    # ── Status badge — RIGHT end of header row ──────────────────────────────
+    badge_cx    = margin + full_w - _PAD - _BADGE_R   # right-aligned
+    badge_cy    = top_y - _PAD - _BADGE_R - 2          # same height as Q-number
+    badge_color = GREEN if is_correct else (AMBER if not_att else RED)
+
+    c.setFillColor(badge_color)
+    c.setStrokeColor(WHITE)
+    c.setLineWidth(1.2)
+    c.circle(badge_cx, badge_cy, _BADGE_R, fill=1, stroke=1)
     c.setFillColor(WHITE)
     c.setFont("Helvetica-Bold", 9)
-    c.drawCentredString(bx + br, by + br - 3,
-                        "+" if is_correct else ("?" if not_att else "x"))
+    symbol = "+" if is_correct else ("?" if not_att else "x")
+    c.drawCentredString(badge_cx, badge_cy - 3, symbol)
 
-    # Q number
-    qx = bx + br * 2 + 8
-    qy = top_y - PAD - 8
+    # ── Q-number + question text — LEFT ─────────────────────────────────────
+    qnum_x     = margin + _PAD + 4
+    text_x     = qnum_x + _Q_PRE_W
+    text_top_y = top_y - _PAD - 4
+    tmw        = full_w - _PAD * 2 - _Q_PRE_W - _BADGE_W
+
     c.setFont("Helvetica-Bold", 9)
     c.setFillColor(TEXT_LIGHT)
-    c.drawString(qx - 28, qy, f"Q{qi+1}.")
+    c.drawString(qnum_x, text_top_y, f"Q{qi + 1}.")
 
     next_y = _wrap_text(c, q.get("question_text", ""),
-                        qx, qy, tmw, "Helvetica", 10, TEXT_DARK, 14)
+                        text_x, text_top_y, tmw,
+                        "Helvetica", 10, TEXT_DARK, 14)
+
     if not_att:
         c.setFont("Helvetica", 8)
         c.setFillColor(AMBER)
-        c.drawString(qx, next_y + 2, "Not Attempted")
-        next_y -= 4
-    next_y -= 4
+        c.drawString(text_x, next_y + 2, "Not Attempted")
+        next_y -= 16
+    else:
+        next_y -= 8
 
-    # Options — 2-column grid
-    opts    = q.get("options", [])
-    col_w   = (full_w - PAD * 2) / 2 - 4
-    row_h   = 24
-    opt_xl  = margin + PAD
-    opt_xr  = opt_xl + col_w + 8
+    # ── Options — 2-column grid ──────────────────────────────────────────────
+    opts       = q.get("options", [])
+    col_w      = (full_w - _PAD * 2) / 2 - 4
+    row_h      = 26
+    opt_xl     = margin + _PAD
+    opt_xr     = opt_xl + col_w + 8
     correct_id = str(q.get("correct_answer", ""))
     user_id    = str(user_ans) if user_ans is not None else ""
 
@@ -679,12 +707,12 @@ def _draw_question_block(c, margin, top_y, full_w, q: dict, qi: int) -> float:
             opt_text = str(opt)
             opt_id   = opt_text
 
-        is_user    = user_id == opt_id
+        is_user        = user_id == opt_id
         is_correct_opt = correct_id == opt_id
 
         row_idx = oi // 2
-        col     = oi % 2
-        ox      = opt_xl if col == 0 else opt_xr
+        col_idx = oi % 2
+        ox      = opt_xl if col_idx == 0 else opt_xr
         oy      = next_y - row_idx * row_h
 
         if is_correct_opt:
@@ -694,36 +722,38 @@ def _draw_question_block(c, margin, top_y, full_w, q: dict, qi: int) -> float:
         else:
             bg_c, bor_c = SURFACE2, BORDER2
 
-        _rrect(c, ox, oy - row_h + 4, col_w, row_h - 2, r=5,
-               fill=bg_c, stroke_color=bor_c, sw=0.6)
+        _rrect(c, ox, oy - row_h + 4, col_w, row_h - 2,
+               r=5, fill=bg_c, stroke_color=bor_c, sw=0.6)
 
-        badge_bg = GREEN if is_correct_opt else (RED if is_user else HexColor("#CBD5E1"))
-        c.setFillColor(badge_bg)
+        letter_bg = (GREEN if is_correct_opt else
+                     RED   if is_user        else
+                     SLATE_BADGE)
+        c.setFillColor(letter_bg)
         c.roundRect(ox + 5, oy - row_h + 8, 16, 14, 3, fill=1, stroke=0)
         c.setFillColor(WHITE if (is_correct_opt or is_user) else TEXT_DARK)
         c.setFont("Helvetica-Bold", 8)
         c.drawCentredString(ox + 13, oy - row_h + 12, LETTER_LABELS[oi])
 
-        txt   = opt_text
+        # Strip leading "A) " / "B. " from option text if backend sends it
+        txt    = re.sub(r"^[A-Da-d][).]\s*", "", opt_text)
         max_ow = col_w - 32
         c.setFont("Helvetica", 8.5)
         while txt and c.stringWidth(txt, "Helvetica", 8.5) > max_ow:
             txt = txt[:-2] + "\u2026"
-        tc = GREEN if is_correct_opt else (RED if is_user else TEXT_DARK)
-        c.setFillColor(tc)
+        c.setFillColor(GREEN if is_correct_opt else RED if is_user else TEXT_DARK)
         c.drawString(ox + 26, oy - row_h + 12, txt)
 
     rows_used = math.ceil(len(opts) / 2)
-    next_y   -= rows_used * row_h + 6
+    next_y   -= rows_used * row_h + 8
 
-    # Explanation
+    # ── Explanation ──────────────────────────────────────────────────────────
     if q.get("explanation"):
         exp   = q["explanation"]
-        exp_x = margin + PAD
-        exp_w = full_w - PAD * 2
+        exp_x = margin + _PAD
+        exp_w = full_w - _PAD * 2
         exp_h = 44
-        _rrect(c, exp_x, next_y - exp_h, exp_w, exp_h, r=5,
-               fill=SURFACE2, stroke_color=BORDER2, sw=0.5)
+        _rrect(c, exp_x, next_y - exp_h, exp_w, exp_h,
+               r=5, fill=SURFACE2, stroke_color=BORDER2, sw=0.5)
         c.setFont("Helvetica-Bold", 8)
         c.setFillColor(AMBER)
         c.drawString(exp_x + 8, next_y - 14, "Explanation")
@@ -740,7 +770,7 @@ def build_result_report(
     logo_path: str | None = None,
 ) -> bytes:
     """
-    Single-attempt Results PDF mirroring the Results page.
+    Single-attempt Results PDF mirroring the Results page UI.
 
     Parameters
     ----------
@@ -748,18 +778,18 @@ def build_result_report(
     result    : {
                   correct, total, time_spent_seconds, tabs,
                   test_title, subject, topic, type,
-                  insight_type, insight_title, insight_body,
-                  score_pct   # optional – computed from correct/total if absent
+                  insight_type, insight_title, insight_body,   # optional
+                  score_pct   # optional — computed from correct/total if absent
                 }
     questions : list of {
                   question_text,
                   options: [ { id, option_text } | str ],
-                  correct_answer,   # id of correct option
-                  selected_answer,  # id chosen by student (None = not attempted)
+                  correct_answer,    # id of the correct option
+                  selected_answer,   # id chosen by student (None = not attempted)
                   is_correct,
-                  explanation       # optional str
+                  explanation        # optional str
                 }
-    logo_path : path to logo image file
+    logo_path : path to logo image file (optional)
     """
     W, H   = A4
     margin = 28
@@ -775,7 +805,7 @@ def build_result_report(
         _draw_shared_header(c, W, H, logo_path)
         return H - 82
 
-    # ── Page 1 ────────────────────────────────────────────────────────────────
+    # ── Page 1 ───────────────────────────────────────────────────────────────
     c.setFillColor(BG)
     c.rect(0, 0, W, H, fill=1, stroke=0)
     _draw_shared_header(c, W, H, logo_path)
@@ -784,13 +814,11 @@ def build_result_report(
     cur_y = _draw_student_info_card(c, margin, cur_y, W, student)
     cur_y = _draw_score_summary_card(c, margin, cur_y, W, result)
 
-    # Section label
     c.setFont("Helvetica-Bold", 11)
     c.setFillColor(TEXT_DARK)
     c.drawString(margin, cur_y, "Question Review")
     cur_y -= 16
 
-    # Questions
     for qi, q in enumerate(questions):
         needed = _question_block_height(c, q, full_w)
         if cur_y - needed < 36:

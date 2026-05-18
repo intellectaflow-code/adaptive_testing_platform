@@ -93,10 +93,13 @@ async def download_result_report(
     # ── 2. Student profile ─────────────────────────────────────────────────────
     profile = await db.fetchrow(
         """
-        SELECT p.full_name, p.usn, d.name AS branch, p.section
-        FROM public.profiles p
-        LEFT JOIN public.departments d ON d.id = p.department_id
-        WHERE p.id = $1
+        SELECT
+            full_name,
+            usn,
+            branch,
+            section
+        FROM public.profiles
+        WHERE id = $1
         """,
         student_id,
     )
